@@ -89,6 +89,7 @@ ALLOWED_STYLE_FIELDS = {
     "color",
     "bold",
     "italic",
+    "underline",
     "alignment",
     "line_spacing",
     "first_line_indent_pt",
@@ -160,6 +161,7 @@ DEFAULT_STYLE = {
     "color": "000000",
     "bold": False,
     "italic": False,
+    "underline": False,
     "alignment": "left",
     "line_spacing": 1.5,
     "first_line_indent_pt": 0,
@@ -524,7 +526,7 @@ def normalize_format_rules(template, fill_defaults=True):
                 normalized_style["first_line_indent_pt"]
             )
 
-        for field in ["keep_with_next", "keep_together"]:
+        for field in ["underline", "keep_with_next", "keep_together"]:
             if field in normalized_style:
                 normalized_style[field] = normalize_boolean(
                     normalized_style[field],
@@ -704,6 +706,9 @@ def validate_style_config(style_name: str, style_config: dict):
 
     if "italic" in style_config and not isinstance(style_config["italic"], bool):
         errors.append(f"模板字段 {field_path}.italic 应为布尔值 true 或 false。")
+
+    if "underline" in style_config and not isinstance(style_config["underline"], bool):
+        errors.append(f"模板字段 {field_path}.underline 应为布尔值 true 或 false。")
 
     for field in ["keep_with_next", "keep_together"]:
         if field in style_config and not isinstance(style_config[field], bool):
@@ -1321,6 +1326,7 @@ def apply_run_font(run, style_config) -> None:
     color = style_config.get("color", DEFAULT_STYLE["color"])
     bold = style_config.get("bold", DEFAULT_STYLE["bold"])
     italic = style_config.get("italic", DEFAULT_STYLE["italic"])
+    underline = style_config.get("underline", DEFAULT_STYLE["underline"])
 
     run.font.name = font_name
     run.font.size = Pt(font_size)
@@ -1328,6 +1334,7 @@ def apply_run_font(run, style_config) -> None:
         run.font.color.rgb = RGBColor.from_string(str(color))
     run.bold = bold
     run.italic = italic
+    run.font.underline = bool(underline)
 
     r_pr = run._element.get_or_add_rPr()
     r_fonts = r_pr.rFonts

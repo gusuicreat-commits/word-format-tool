@@ -65,6 +65,7 @@
         "size_cn": { "type": "string" },
         "bold": { "type": "boolean" },
         "italic": { "type": "boolean" },
+        "underline": { "type": "boolean" },
         "alignment": {
           "type": "string",
           "enum": ["left", "center", "right", "justify"]

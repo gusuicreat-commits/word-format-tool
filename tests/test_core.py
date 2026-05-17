@@ -107,6 +107,26 @@ class CoreTests(unittest.TestCase):
         errors, _ = format_docx.validate_format_rules(template)
         self.assertEqual(errors, [])
 
+    def test_validate_format_rules_accepts_underline(self):
+        template = {
+            "version": "1.0",
+            "name": "test",
+            "page": {},
+            "styles": {"body": {"underline": False}},
+        }
+        errors, _ = format_docx.validate_format_rules(template)
+        self.assertEqual(errors, [])
+
+    def test_validate_format_rules_rejects_bad_underline(self):
+        template = {
+            "version": "1.0",
+            "name": "bad",
+            "page": {},
+            "styles": {"body": {"underline": "no"}},
+        }
+        errors, _ = format_docx.validate_format_rules(template)
+        self.assertTrue(any("styles.body.underline" in error for error in errors))
+
     def test_validate_format_rules_accepts_keep_with_next(self):
         template = {
             "version": "1.0",
@@ -167,6 +187,106 @@ class CoreTests(unittest.TestCase):
             },
         )
         self.assertEqual(str(run.font.color.rgb), "000000")
+
+    def test_format_normal_paragraphs_clears_body_underline(self):
+        doc = Document()
+        doc.add_paragraph("\u8bba\u6587\u6807\u9898")
+        paragraph = doc.add_paragraph("\u8fd9\u662f\u6b63\u6587\u5185\u5bb9")
+        paragraph.runs[0].font.underline = True
+        template = {
+            "styles": {
+                "paper_title": {"font": "\u5b8b\u4f53", "size_pt": 12},
+                "body": {"font": "\u5b8b\u4f53", "size_pt": 12},
+            },
+            "_runtime": {"fallback_count": 0, "warned_missing_styles": set()},
+        }
+        report = {"paragraphs": [], "warnings": []}
+
+        format_docx.format_normal_paragraphs(doc, template, report)
+
+        self.assertFalse(paragraph.runs[0].font.underline)
+
+    def test_format_normal_paragraphs_clears_paper_title_underline(self):
+        doc = Document()
+        paragraph = doc.add_paragraph("\u8bba\u6587\u6807\u9898")
+        paragraph.runs[0].font.underline = True
+        template = {
+            "styles": {
+                "paper_title": {"font": "\u5b8b\u4f53", "size_pt": 12},
+                "body": {"font": "\u5b8b\u4f53", "size_pt": 12},
+            },
+            "_runtime": {"fallback_count": 0, "warned_missing_styles": set()},
+        }
+        report = {"paragraphs": [], "warnings": []}
+
+        format_docx.format_normal_paragraphs(doc, template, report)
+
+        self.assertFalse(paragraph.runs[0].font.underline)
+
+    def test_format_tables_clears_table_text_underline(self):
+        doc = Document()
+        table = doc.add_table(rows=1, cols=1)
+        paragraph = table.cell(0, 0).paragraphs[0]
+        paragraph.text = "\u8868\u683c\u6587\u5b57"
+        paragraph.runs[0].font.underline = True
+        template = {
+            "styles": {
+                "body": {"font": "\u5b8b\u4f53", "size_pt": 12},
+                "table_text": {"font": "\u5b8b\u4f53", "size_pt": 10.5},
+            },
+            "_runtime": {"fallback_count": 0, "warned_missing_styles": set()},
+        }
+        report = {"tables": [], "warnings": []}
+
+        format_docx.format_tables(doc, template, report)
+
+        self.assertFalse(paragraph.runs[0].font.underline)
+
+    def test_format_normal_paragraphs_clears_reference_item_underline(self):
+        doc = Document()
+        doc.add_paragraph("\u53c2\u8003\u6587\u732e")
+        paragraph = doc.add_paragraph("[1] \u5f20\u4e09. \u6d4b\u8bd5\u6587\u732e. 2024.")
+        paragraph.runs[0].font.underline = True
+        template = {
+            "styles": {
+                "body": {"font": "\u5b8b\u4f53", "size_pt": 12},
+                "reference_title": {"font": "\u9ed1\u4f53", "size_pt": 14},
+                "reference_item": {"font": "\u5b8b\u4f53", "size_pt": 10.5},
+            },
+            "_runtime": {"fallback_count": 0, "warned_missing_styles": set()},
+        }
+        report = {"paragraphs": [], "warnings": []}
+
+        format_docx.format_normal_paragraphs(doc, template, report)
+
+        self.assertEqual(report["paragraphs"][1]["detected_type"], "reference_item")
+        self.assertFalse(paragraph.runs[0].font.underline)
+
+    def test_explicit_underline_true_is_preserved(self):
+        doc = Document()
+        doc.add_paragraph("\u8bba\u6587\u6807\u9898")
+        paragraph = doc.add_paragraph("\u8fd9\u662f\u6b63\u6587\u5185\u5bb9")
+        paragraph.runs[0].font.underline = False
+        template = {
+            "styles": {
+                "paper_title": {"font": "\u5b8b\u4f53", "size_pt": 12},
+                "body": {
+                    "font": "\u5b8b\u4f53",
+                    "size_pt": 12,
+                    "bold": True,
+                    "italic": True,
+                    "underline": True,
+                },
+            },
+            "_runtime": {"fallback_count": 0, "warned_missing_styles": set()},
+        }
+        report = {"paragraphs": [], "warnings": []}
+
+        format_docx.format_normal_paragraphs(doc, template, report)
+
+        self.assertTrue(paragraph.runs[0].font.underline)
+        self.assertTrue(paragraph.runs[0].bold)
+        self.assertTrue(paragraph.runs[0].italic)
 
     def test_apply_paragraph_style_sets_pagination_controls(self):
         doc = Document()
@@ -474,6 +594,12 @@ class CoreTests(unittest.TestCase):
     def test_validate_override_rules_rejects_bad_alignment(self):
         errors, _ = format_docx.validate_override_rules({"styles": {"body": {"alignment": "middle"}}})
         self.assertTrue(any("styles.body.alignment" in error for error in errors))
+
+    def test_validate_override_rules_accepts_underline(self):
+        errors, _ = format_docx.validate_override_rules(
+            {"styles": {"body": {"underline": True}}}
+        )
+        self.assertEqual(errors, [])
 
     def test_validate_override_rules_accepts_caption_pagination_controls(self):
         errors, _ = format_docx.validate_override_rules(
