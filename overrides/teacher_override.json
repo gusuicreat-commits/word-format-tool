@@ -1,0 +1,19 @@
+{
+  "name": "teacher_custom",
+  "description": "老师课堂论文自定义要求示例",
+  "styles": {
+    "body": {
+      "font": "微软雅黑",
+      "size_cn": "五号"
+    },
+    "heading_1": {
+      "font": "黑体",
+      "size_cn": "小三",
+      "alignment": "居中"
+    },
+    "reference_item": {
+      "font": "宋体",
+      "size_cn": "五号"
+    }
+  }
+}

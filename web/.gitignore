@@ -1,0 +1,9 @@
+node_modules
+.next
+out
+tsconfig.tsbuildinfo
+.env.local
+tmp/jobs/*
+!tmp/jobs/.gitkeep
+tmp/parse-jobs/*
+!tmp/parse-jobs/.gitkeep

@@ -1,0 +1,24 @@
+{
+  "name": "word-format-tool-web",
+  "version": "2.4.2",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "test:parser": "node tests/local-parser.test.js",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "next": "^16.1.6",
+    "openai": "^6.38.0",
+    "react": "^19.2.4",
+    "react-dom": "^19.2.4"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "typescript": "^5.8.0"
+  }
+}

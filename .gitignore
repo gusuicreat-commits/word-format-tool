@@ -1,0 +1,41 @@
+# Environment variables / secrets
+.env
+.env.local
+web/.env
+web/.env.local
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+
+# Node / Next.js
+node_modules/
+web/node_modules/
+.next/
+web/.next/
+out/
+web/out/
+dist/
+web/dist/
+
+# Temporary files
+tmp/
+web/tmp/
+*.log
+
+# Generated reports and outputs
+reports/
+formatted-paper*.docx
+samples/output*.docx
+samples/*_output.docx
+samples/word_format*_output.docx
+samples/web_upload_test_output.docx
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

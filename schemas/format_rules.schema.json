@@ -1,0 +1,80 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://local.word-format-tool/schemas/format_rules.schema.json",
+  "title": "Word论文格式规则模板",
+  "type": "object",
+  "required": ["version", "name", "page", "styles"],
+  "properties": {
+    "version": {
+      "type": "string",
+      "description": "格式规则版本，例如 1.0。"
+    },
+    "name": {
+      "type": "string",
+      "description": "英文模板名称，例如 default、course_paper。"
+    },
+    "description": {
+      "type": "string",
+      "description": "中文模板说明。"
+    },
+    "page": {
+      "type": "object",
+      "description": "页面设置。",
+      "properties": {
+        "top_margin_cm": { "type": "number" },
+        "bottom_margin_cm": { "type": "number" },
+        "left_margin_cm": { "type": "number" },
+        "right_margin_cm": { "type": "number" }
+      },
+      "additionalProperties": false
+    },
+    "styles": {
+      "type": "object",
+      "description": "各段落类型对应的格式规则。",
+      "required": ["body"],
+      "properties": {
+        "paper_title": { "$ref": "#/$defs/style" },
+        "abstract_title": { "$ref": "#/$defs/style" },
+        "abstract_content": { "$ref": "#/$defs/style" },
+        "keywords": { "$ref": "#/$defs/style" },
+        "heading_1": { "$ref": "#/$defs/style" },
+        "heading_2": { "$ref": "#/$defs/style" },
+        "heading_3": { "$ref": "#/$defs/style" },
+        "body": { "$ref": "#/$defs/style" },
+        "table_caption": { "$ref": "#/$defs/style" },
+        "figure_caption": { "$ref": "#/$defs/style" },
+        "reference_title": { "$ref": "#/$defs/style" },
+        "reference_item": { "$ref": "#/$defs/style" },
+        "table_text": { "$ref": "#/$defs/style" }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "style": {
+      "type": "object",
+      "properties": {
+        "font": { "type": "string" },
+        "color": {
+          "type": "string",
+          "pattern": "^[0-9A-Fa-f]{6}$",
+          "description": "字体颜色，6 位十六进制，例如 000000。"
+        },
+        "size_pt": { "type": "number" },
+        "size_cn": { "type": "string" },
+        "bold": { "type": "boolean" },
+        "italic": { "type": "boolean" },
+        "alignment": {
+          "type": "string",
+          "enum": ["left", "center", "right", "justify"]
+        },
+        "line_spacing": { "type": "number" },
+        "first_line_indent_pt": { "type": "number" },
+        "space_before_pt": { "type": "number" },
+        "space_after_pt": { "type": "number" }
+      },
+      "additionalProperties": false
+    }
+  }
+}
