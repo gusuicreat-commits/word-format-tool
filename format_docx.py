@@ -1,4 +1,4 @@
-"""文格 Lite V2.4.2：本地版 Word 论文格式修改器。
+"""文格 Lite V2.4.3：本地版 Word 论文格式修改器。
 
 用法：
     python format_docx.py input.docx output.docx --overwrite
@@ -24,6 +24,7 @@ try:
     from docx.oxml import OxmlElement
     from docx.oxml.ns import qn
     from docx.shared import Cm, Pt, RGBColor
+    from docx.text.paragraph import Paragraph
 except ImportError:
     Document = None
     WD_ALIGN_PARAGRAPH = None
@@ -32,11 +33,12 @@ except ImportError:
     Cm = None
     Pt = None
     RGBColor = None
+    Paragraph = None
 
 
 BASE_DIR = Path(__file__).resolve().parent
 DEFAULT_TEMPLATE_PATH = BASE_DIR / "templates" / "default.json"
-VERSION = "V2.4.2"
+VERSION = "V2.4.3"
 
 CHINESE_NUMBER = "一二三四五六七八九十"
 PROTECTED_FIRST_PARAGRAPHS = {
@@ -78,6 +80,8 @@ SUPPORTED_STYLE_TYPES = [
     "table_text",
 ]
 
+NUMBERING_CLEAR_PARAGRAPH_TYPES = set(SUPPORTED_STYLE_TYPES) - {"table_text"}
+
 ALLOWED_STYLE_FIELDS = {
     "font",
     "size_pt",
@@ -90,6 +94,8 @@ ALLOWED_STYLE_FIELDS = {
     "first_line_indent_pt",
     "space_before_pt",
     "space_after_pt",
+    "keep_with_next",
+    "keep_together",
 }
 
 COLOR_MAP = {
@@ -177,7 +183,7 @@ class ReportError(UserFacingError):
 def parse_args(argv=None) -> argparse.Namespace:
     """解析命令行参数。"""
     parser = argparse.ArgumentParser(
-        description="文格 Lite V2.4.2：基于规则识别段落，按 JSON 模板修改 .docx，并可生成处理报告。"
+        description="文格 Lite V2.4.3：基于规则识别段落，按 JSON 模板修改 .docx，并可生成处理报告。"
     )
     parser.add_argument("input_docx", nargs="?", help="输入 Word 文件路径，例如 samples/input.docx")
     parser.add_argument("output_docx", nargs="?", help="输出 Word 文件路径，例如 samples/output.docx")
@@ -448,6 +454,19 @@ def normalize_page_margin(value) -> int | float:
     return int(margin) if margin.is_integer() else margin
 
 
+def normalize_boolean(value, field_name: str) -> bool:
+    """把可选中文布尔写法转换成 bool。"""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip()
+        if normalized in {"是", "true", "True", "TRUE"}:
+            return True
+        if normalized in {"否", "false", "False", "FALSE"}:
+            return False
+    raise TemplateError(f"{field_name} 应为布尔值 true 或 false。")
+
+
 def normalize_format_rules(template, fill_defaults=True):
     """把模板中的中文表达和非标准表达转换成内部标准格式。"""
     if not isinstance(template, dict):
@@ -504,6 +523,13 @@ def normalize_format_rules(template, fill_defaults=True):
             normalized_style["first_line_indent_pt"] = normalize_indent(
                 normalized_style["first_line_indent_pt"]
             )
+
+        for field in ["keep_with_next", "keep_together"]:
+            if field in normalized_style:
+                normalized_style[field] = normalize_boolean(
+                    normalized_style[field],
+                    f"styles.{style_name}.{field}",
+                )
 
         if fill_defaults:
             for field, default_value in DEFAULT_STYLE.items():
@@ -678,6 +704,10 @@ def validate_style_config(style_name: str, style_config: dict):
 
     if "italic" in style_config and not isinstance(style_config["italic"], bool):
         errors.append(f"模板字段 {field_path}.italic 应为布尔值 true 或 false。")
+
+    for field in ["keep_with_next", "keep_together"]:
+        if field in style_config and not isinstance(style_config[field], bool):
+            errors.append(f"模板字段 {field_path}.{field} 应为布尔值 true 或 false。")
 
     if "alignment" in style_config:
         alignment = style_config["alignment"]
@@ -1069,18 +1099,19 @@ def make_text_preview(text, max_len=50):
 
 
 def add_paragraph_report(
-    report, index, text, detected_type, applied_style, warning=None
+    report, index, text, detected_type, applied_style, warning=None, pagination=None
 ):
     """添加段落识别和样式应用记录。"""
-    report["paragraphs"].append(
-        {
-            "index": index,
-            "text_preview": make_text_preview(text),
-            "detected_type": detected_type,
-            "applied_style": applied_style,
-            "warning": warning,
-        }
-    )
+    item = {
+        "index": index,
+        "text_preview": make_text_preview(text),
+        "detected_type": detected_type,
+        "applied_style": applied_style,
+        "warning": warning,
+    }
+    if pagination is not None:
+        item["pagination"] = pagination
+    report["paragraphs"].append(item)
 
 
 def add_table_report(
@@ -1327,9 +1358,85 @@ def apply_paragraph_style(paragraph, style_config) -> None:
     paragraph_format.space_after = Pt(
         style_config.get("space_after_pt", DEFAULT_STYLE["space_after_pt"])
     )
+    if "keep_with_next" in style_config:
+        paragraph_format.keep_with_next = bool(style_config["keep_with_next"])
+    if "keep_together" in style_config:
+        paragraph_format.keep_together = bool(style_config["keep_together"])
 
     for run in paragraph.runs:
         apply_run_font(run, style_config)
+
+
+def remove_child_by_tag(parent, tag_name: str) -> bool:
+    """Remove a direct XML child by tag name."""
+    child = parent.find(qn(tag_name))
+    if child is None:
+        return False
+    parent.remove(child)
+    return True
+
+
+def paragraph_style_is_list_style(style) -> bool:
+    """Return True when a paragraph style can carry Word list numbering."""
+    seen = set()
+    current = style
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        style_id = (getattr(current, "style_id", "") or "").lower()
+        style_name = (getattr(current, "name", "") or "").lower()
+        if any(
+            marker in style_id or marker in style_name
+            for marker in ("list", "bullet", "number", "项目符号", "编号", "列表")
+        ):
+            return True
+
+        p_pr = current._element.find(qn("w:pPr"))
+        if p_pr is not None and p_pr.find(qn("w:numPr")) is not None:
+            return True
+
+        current = getattr(current, "base_style", None)
+
+    return False
+
+
+def clear_paragraph_numbering(paragraph) -> None:
+    """Clear Word automatic numbering/list formatting without changing text."""
+    p_pr = paragraph._p.get_or_add_pPr()
+    remove_child_by_tag(p_pr, "w:numPr")
+
+    try:
+        if paragraph_style_is_list_style(paragraph.style):
+            paragraph.style = "Normal"
+    except (KeyError, ValueError, AttributeError):
+        remove_child_by_tag(p_pr, "w:pStyle")
+
+
+def clear_paragraph_list_formatting(paragraph) -> None:
+    """Backward-compatible wrapper for numbering cleanup."""
+    clear_paragraph_numbering(paragraph)
+
+
+def apply_caption_pagination_defaults(paragraph, paragraph_type: str) -> None:
+    """图题和表题默认与后续内容保持在同一页。"""
+    if paragraph_type not in {"table_caption", "figure_caption"}:
+        return
+
+    clear_paragraph_numbering(paragraph)
+    paragraph_format = paragraph.paragraph_format
+    paragraph_format.keep_with_next = True
+    paragraph_format.keep_together = True
+
+
+def get_caption_pagination_report(paragraph, paragraph_type: str) -> dict | None:
+    """生成图题/表题分页控制报告。"""
+    if paragraph_type not in {"table_caption", "figure_caption"}:
+        return None
+
+    paragraph_format = paragraph.paragraph_format
+    return {
+        "keep_with_next": paragraph_format.keep_with_next is True,
+        "keep_together": paragraph_format.keep_together is True,
+    }
 
 
 def apply_normal_style(doc, template) -> None:
@@ -1375,6 +1482,21 @@ def increment_stat(context: dict, paragraph_type: str) -> None:
     stats[paragraph_type] = stats.get(paragraph_type, 0) + 1
 
 
+def clear_empty_paragraph_numbering_near_captions(paragraphs, index: int) -> None:
+    """Clear list markers from an empty paragraph adjacent to a caption."""
+    paragraph = paragraphs[index]
+    if paragraph.text.strip():
+        return
+
+    adjacent_indexes = [index - 1, index + 1]
+    for adjacent_index in adjacent_indexes:
+        if adjacent_index < 0 or adjacent_index >= len(paragraphs):
+            continue
+        if detect_caption_type(paragraphs[adjacent_index].text.strip()):
+            clear_paragraph_numbering(paragraph)
+            return
+
+
 def format_normal_paragraphs(doc, template, report) -> dict:
     """遍历普通段落，识别论文结构并按模板套用格式。"""
     context = {
@@ -1405,7 +1527,10 @@ def format_normal_paragraphs(doc, template, report) -> dict:
             if style_warning:
                 warning_messages.append(style_warning)
 
+            if paragraph_type in NUMBERING_CLEAR_PARAGRAPH_TYPES:
+                clear_paragraph_numbering(paragraph)
             apply_paragraph_style(paragraph, style_config)
+            apply_caption_pagination_defaults(paragraph, paragraph_type)
             add_paragraph_report(
                 report,
                 index,
@@ -1413,7 +1538,10 @@ def format_normal_paragraphs(doc, template, report) -> dict:
                 paragraph_type,
                 applied_style,
                 "；".join(warning_messages) if warning_messages else None,
+                pagination=get_caption_pagination_report(paragraph, paragraph_type),
             )
+        else:
+            clear_empty_paragraph_numbering_near_captions(doc.paragraphs, index)
 
         increment_stat(context, paragraph_type)
 
@@ -1435,23 +1563,95 @@ def iter_tables(tables):
                 yield from iter_tables(cell.tables)
 
 
+def set_table_rows_cant_split(table) -> None:
+    """设置表格行不跨页断行，不强制整个表格同页。"""
+    for row in table.rows:
+        tr_pr = row._tr.get_or_add_trPr()
+        if tr_pr.find(qn("w:cantSplit")) is None:
+            tr_pr.append(OxmlElement("w:cantSplit"))
+
+
+def get_previous_paragraph_for_table(table):
+    """Return the paragraph immediately before a table in document order."""
+    if Paragraph is None:
+        return None
+
+    previous = table._element.getprevious()
+    if previous is None or previous.tag != qn("w:p"):
+        return None
+
+    return Paragraph(previous, table._parent)
+
+
+def get_next_paragraph_for_table(table):
+    """Return the paragraph immediately after a table in document order."""
+    if Paragraph is None:
+        return None
+
+    next_element = table._element.getnext()
+    if next_element is None or next_element.tag != qn("w:p"):
+        return None
+
+    return Paragraph(next_element, table._parent)
+
+
+def get_previous_table_caption(table):
+    """Return the table caption paragraph directly before a table, if any."""
+    paragraph = get_previous_paragraph_for_table(table)
+    if paragraph is None:
+        return None
+
+    if detect_caption_type(paragraph.text.strip()) == "table_caption":
+        return paragraph
+
+    return None
+
+
+def clear_empty_paragraph_numbering_near_table(table) -> None:
+    """Clear list markers from empty paragraphs directly adjacent to a table."""
+    for paragraph in (
+        get_previous_paragraph_for_table(table),
+        get_next_paragraph_for_table(table),
+    ):
+        if paragraph is not None and not paragraph.text.strip():
+            clear_paragraph_numbering(paragraph)
+
+
+def apply_table_pagination_basics(table) -> bool:
+    """Keep only low-risk pagination controls around tables."""
+    caption = get_previous_table_caption(table)
+    if caption is not None:
+        apply_caption_pagination_defaults(caption, "table_caption")
+
+    clear_empty_paragraph_numbering_near_table(table)
+    return caption is not None
+
+
 def format_tables(doc, template, report) -> int:
     """统一设置表格内文字格式，并记录表格报告。"""
     table_count = 0
 
     for table_index, table in enumerate(iter_tables(doc.tables)):
         table_count += 1
+        set_table_rows_cant_split(table)
         row_count = len(table.rows)
         cell_count = sum(len(row.cells) for row in table.rows)
         style_config, applied_style, style_warning = get_style_config(
             template, "table_text", report, None, f"表格 {table_index}"
         )
+        cell_style_config = {
+            field: value
+            for field, value in style_config.items()
+            if field not in {"keep_with_next", "keep_together"}
+        }
 
         for row in table.rows:
             for cell in row.cells:
                 for paragraph in cell.paragraphs:
-                    apply_paragraph_style(paragraph, style_config)
+                    clear_paragraph_numbering(paragraph)
+                    apply_paragraph_style(paragraph, cell_style_config)
 
+        apply_table_pagination_basics(table)
         add_table_report(
             report,
             table_index,

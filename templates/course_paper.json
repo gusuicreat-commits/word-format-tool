@@ -139,7 +139,9 @@
       "line_spacing": 1,
       "first_line_indent_pt": 0,
       "space_before_pt": 6,
-      "space_after_pt": 6
+      "space_after_pt": 6,
+      "keep_with_next": true,
+      "keep_together": true
     },
     "figure_caption": {
       "font": "宋体",
@@ -150,7 +152,9 @@
       "line_spacing": 1,
       "first_line_indent_pt": 0,
       "space_before_pt": 6,
-      "space_after_pt": 6
+      "space_after_pt": 6,
+      "keep_with_next": true,
+      "keep_together": true
     }
   }
 }

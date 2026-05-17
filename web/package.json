@@ -1,12 +1,13 @@
 {
   "name": "word-format-tool-web",
-  "version": "2.4.2",
+  "version": "2.4.3",
   "private": true,
   "scripts": {
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
     "test:parser": "node tests/local-parser.test.js",
+    "test:ui-copy": "node tests/ui-copy.test.js",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

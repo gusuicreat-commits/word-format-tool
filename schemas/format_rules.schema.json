@@ -72,7 +72,9 @@
         "line_spacing": { "type": "number" },
         "first_line_indent_pt": { "type": "number" },
         "space_before_pt": { "type": "number" },
-        "space_after_pt": { "type": "number" }
+        "space_after_pt": { "type": "number" },
+        "keep_with_next": { "type": "boolean" },
+        "keep_together": { "type": "boolean" }
       },
       "additionalProperties": false
     }

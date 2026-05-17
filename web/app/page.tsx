@@ -378,6 +378,9 @@ export default function HomePage() {
   const baseTemplateName =
     result?.report?.baseTemplate?.name || result?.report?.template.name || templateName;
   const parseWarnings = parseResult?.warnings || [];
+  const selectedTemplateTitle = selectedTemplate
+    ? getTemplateTitle(selectedTemplate)
+    : getTemplateTitle({ name: templateName || "default", description: "" });
 
   return (
     <main className="page">
@@ -460,6 +463,15 @@ export default function HomePage() {
           </div>
         </section>
 
+        <section className="template-notice">
+          <strong>
+            当前基础模板：{selectedTemplateTitle}（{templateName || "default"}）
+          </strong>
+          <span>
+            未明确说明的格式将继承基础模板，系统只会用老师要求覆盖其中对应字段。
+          </span>
+        </section>
+
         {parseResult?.success ? (
           <section className="panel">
             <h2 className="section-title">识别出的格式规则</h2>
@@ -495,7 +507,7 @@ export default function HomePage() {
               <p className="hint">没有识别出明确覆盖字段，将继承基础模板。</p>
             )}
             <p className="review-hint">
-              请检查下方识别结果。系统只会按这些字段修改 Word；如果某项要求识别错误，请修改老师要求后重新解析。
+              下方仅显示老师要求中识别出的覆盖字段；未显示的字段会继续使用基础模板规则。
             </p>
             {parseWarnings.length ? (
               <div className="notice-block">
@@ -628,11 +640,6 @@ export default function HomePage() {
           />
         </section>
 
-        {selectedTemplate ? (
-          <p className="selected-template">
-            当前基础模板：{getTemplateTitle(selectedTemplate)}（{selectedTemplate.name}）
-          </p>
-        ) : null}
         {notices.map((notice, index) => (
           <div className="notice" key={`${notice}-${index}`}>
             {notice}
@@ -645,15 +652,23 @@ export default function HomePage() {
           <div className="panel">
             <h2 className="section-title">处理结果</h2>
             {result.downloadUrl ? (
-              <div className="download-banner">
-                <div>
-                  <strong>Word 已生成</strong>
-                  <span>可以下载修改后的论文文件。</span>
+              <>
+                <div className="download-banner">
+                  <div>
+                    <strong>Word 已生成</strong>
+                    <span>可以下载修改后的论文文件。</span>
+                  </div>
+                  <a className="button download-button" href={result.downloadUrl}>
+                    下载修改后的 Word
+                  </a>
                 </div>
-                <a className="button download-button" href={result.downloadUrl}>
-                  下载修改后的 Word
-                </a>
-              </div>
+                <div className="editing-mark-note">
+                  <p>
+                    提示：如果在 Word 中看到 ¶、↵ 或黑色小方块等符号，请关闭“开始 → 段落 → 显示/隐藏编辑标记”。这些是 Word 的编辑标记，不属于正文内容，不影响打印和提交。
+                  </p>
+                  <p>少量图表分页可能受 Word 自动排版影响，下载后可按需要手动微调。</p>
+                </div>
+              </>
             ) : null}
             <div className="source-grid">
               <Info label="基础模板" value={baseTemplateName} />

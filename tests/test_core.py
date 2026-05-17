@@ -23,6 +23,18 @@ def make_context():
     }
 
 
+def add_direct_numbering(paragraph):
+    p_pr = paragraph._p.get_or_add_pPr()
+    num_pr = format_docx.OxmlElement("w:numPr")
+    ilvl = format_docx.OxmlElement("w:ilvl")
+    ilvl.set(format_docx.qn("w:val"), "0")
+    num_id = format_docx.OxmlElement("w:numId")
+    num_id.set(format_docx.qn("w:val"), "1")
+    num_pr.append(ilvl)
+    num_pr.append(num_id)
+    p_pr.append(num_pr)
+
+
 class CoreTests(unittest.TestCase):
     def test_detect_chinese_heading_1(self):
         result = format_docx.detect_paragraph_type("一、研究背景", 0, make_context())
@@ -95,6 +107,42 @@ class CoreTests(unittest.TestCase):
         errors, _ = format_docx.validate_format_rules(template)
         self.assertEqual(errors, [])
 
+    def test_validate_format_rules_accepts_keep_with_next(self):
+        template = {
+            "version": "1.0",
+            "name": "test",
+            "page": {},
+            "styles": {"body": {}, "table_caption": {"keep_with_next": True}},
+        }
+        errors, _ = format_docx.validate_format_rules(template)
+        self.assertEqual(errors, [])
+
+    def test_validate_format_rules_accepts_keep_together(self):
+        template = {
+            "version": "1.0",
+            "name": "test",
+            "page": {},
+            "styles": {"body": {}, "figure_caption": {"keep_together": True}},
+        }
+        errors, _ = format_docx.validate_format_rules(template)
+        self.assertEqual(errors, [])
+
+    def test_validate_format_rules_rejects_bad_keep_with_next(self):
+        template = {
+            "version": "1.0",
+            "name": "bad",
+            "page": {},
+            "styles": {"body": {}, "table_caption": {"keep_with_next": "yes"}},
+        }
+        errors, _ = format_docx.validate_format_rules(template)
+        self.assertTrue(
+            any(
+                "styles.table_caption.keep_with_next 应为布尔值 true 或 false"
+                in error
+                for error in errors
+            )
+        )
+
     def test_validate_format_rules_rejects_bad_color(self):
         template = {
             "version": "1.0",
@@ -119,6 +167,252 @@ class CoreTests(unittest.TestCase):
             },
         )
         self.assertEqual(str(run.font.color.rgb), "000000")
+
+    def test_apply_paragraph_style_sets_pagination_controls(self):
+        doc = Document()
+        paragraph = doc.add_paragraph("表1 论文格式处理流程示例")
+        format_docx.apply_paragraph_style(
+            paragraph,
+            {
+                "font": "宋体",
+                "size_pt": 10.5,
+                "keep_with_next": True,
+                "keep_together": True,
+            },
+        )
+        self.assertTrue(paragraph.paragraph_format.keep_with_next)
+        self.assertTrue(paragraph.paragraph_format.keep_together)
+
+    def test_format_normal_paragraphs_applies_table_caption_pagination_default(self):
+        doc = Document()
+        paragraph = doc.add_paragraph("表1 论文格式处理流程示例")
+        template = {
+            "styles": {
+                "body": {"font": "宋体", "size_pt": 12},
+                "table_caption": {"font": "宋体", "size_pt": 10.5},
+            },
+            "_runtime": {"fallback_count": 0, "warned_missing_styles": set()},
+        }
+        report = {"paragraphs": [], "warnings": []}
+
+        format_docx.format_normal_paragraphs(doc, template, report)
+
+        self.assertTrue(paragraph.paragraph_format.keep_with_next)
+        self.assertTrue(paragraph.paragraph_format.keep_together)
+        self.assertEqual(report["paragraphs"][0]["detected_type"], "table_caption")
+        self.assertEqual(
+            report["paragraphs"][0]["pagination"],
+            {"keep_with_next": True, "keep_together": True},
+        )
+
+    def test_format_normal_paragraphs_applies_figure_caption_pagination_default(self):
+        doc = Document()
+        paragraph = doc.add_paragraph("图1 系统架构图")
+        template = {
+            "styles": {
+                "body": {"font": "宋体", "size_pt": 12},
+                "figure_caption": {"font": "宋体", "size_pt": 10.5},
+            },
+            "_runtime": {"fallback_count": 0, "warned_missing_styles": set()},
+        }
+        report = {"paragraphs": [], "warnings": []}
+
+        format_docx.format_normal_paragraphs(doc, template, report)
+
+        self.assertTrue(paragraph.paragraph_format.keep_with_next)
+        self.assertTrue(paragraph.paragraph_format.keep_together)
+        self.assertEqual(report["paragraphs"][0]["detected_type"], "figure_caption")
+        self.assertEqual(
+            report["paragraphs"][0]["pagination"],
+            {"keep_with_next": True, "keep_together": True},
+        )
+
+    def test_format_normal_paragraphs_clears_caption_direct_numbering(self):
+        doc = Document()
+        paragraph = doc.add_paragraph("\u88681 \u8bba\u6587\u683c\u5f0f\u5904\u7406\u6d41\u7a0b\u793a\u4f8b")
+        add_direct_numbering(paragraph)
+        self.assertIsNotNone(paragraph._p.pPr.find(format_docx.qn("w:numPr")))
+        template = {
+            "styles": {
+                "body": {"font": "\u5b8b\u4f53", "size_pt": 12},
+                "table_caption": {"font": "\u5b8b\u4f53", "size_pt": 10.5},
+            },
+            "_runtime": {"fallback_count": 0, "warned_missing_styles": set()},
+        }
+        report = {"paragraphs": [], "warnings": []}
+
+        format_docx.format_normal_paragraphs(doc, template, report)
+
+        self.assertIsNone(paragraph._p.pPr.find(format_docx.qn("w:numPr")))
+
+    def test_format_normal_paragraphs_clears_figure_caption_direct_numbering(self):
+        doc = Document()
+        paragraph = doc.add_paragraph("\u56fe1 \u7cfb\u7edf\u603b\u4f53\u6d41\u7a0b\u56fe")
+        add_direct_numbering(paragraph)
+        self.assertIsNotNone(paragraph._p.pPr.find(format_docx.qn("w:numPr")))
+        template = {
+            "styles": {
+                "body": {"font": "\u5b8b\u4f53", "size_pt": 12},
+                "figure_caption": {"font": "\u5b8b\u4f53", "size_pt": 10.5},
+            },
+            "_runtime": {"fallback_count": 0, "warned_missing_styles": set()},
+        }
+        report = {"paragraphs": [], "warnings": []}
+
+        format_docx.format_normal_paragraphs(doc, template, report)
+
+        self.assertIsNone(paragraph._p.pPr.find(format_docx.qn("w:numPr")))
+        self.assertTrue(paragraph.paragraph_format.keep_with_next)
+        self.assertTrue(paragraph.paragraph_format.keep_together)
+
+    def test_format_normal_paragraphs_clears_caption_list_style(self):
+        doc = Document()
+        paragraph = doc.add_paragraph("\u56fe1 \u7cfb\u7edf\u67b6\u6784\u56fe")
+        paragraph.style = "List Bullet"
+        self.assertEqual(paragraph.style.name, "List Bullet")
+        template = {
+            "styles": {
+                "body": {"font": "\u5b8b\u4f53", "size_pt": 12},
+                "figure_caption": {"font": "\u5b8b\u4f53", "size_pt": 10.5},
+            },
+            "_runtime": {"fallback_count": 0, "warned_missing_styles": set()},
+        }
+        report = {"paragraphs": [], "warnings": []}
+
+        format_docx.format_normal_paragraphs(doc, template, report)
+
+        self.assertEqual(paragraph.style.name, "Normal")
+
+    def test_format_normal_paragraphs_clears_list_paragraph_style(self):
+        doc = Document()
+        paragraph = doc.add_paragraph("\u8fd9\u662f\u4e00\u6bb5\u6b63\u6587")
+        paragraph.style = "List Paragraph"
+        self.assertEqual(paragraph.style.name, "List Paragraph")
+        template = {
+            "styles": {
+                "body": {"font": "\u5b8b\u4f53", "size_pt": 12},
+            },
+            "_runtime": {"fallback_count": 0, "warned_missing_styles": set()},
+        }
+        report = {"paragraphs": [], "warnings": []}
+
+        format_docx.format_normal_paragraphs(doc, template, report)
+
+        self.assertEqual(paragraph.text, "\u8fd9\u662f\u4e00\u6bb5\u6b63\u6587")
+        self.assertEqual(paragraph.style.name, "Normal")
+
+    def test_clear_paragraph_numbering_keeps_manual_number_text(self):
+        doc = Document()
+        paragraph = doc.add_paragraph("1.1 \u6280\u672f\u8def\u7ebf")
+        add_direct_numbering(paragraph)
+
+        format_docx.clear_paragraph_numbering(paragraph)
+
+        self.assertEqual(paragraph.text, "1.1 \u6280\u672f\u8def\u7ebf")
+        self.assertIsNone(paragraph._p.pPr.find(format_docx.qn("w:numPr")))
+
+    def test_format_tables_keeps_low_risk_caption_and_row_pagination(self):
+        doc = Document()
+        caption = doc.add_paragraph("\u88681 \u8bba\u6587\u683c\u5f0f\u5904\u7406\u6d41\u7a0b\u793a\u4f8b")
+        table = doc.add_table(rows=3, cols=2)
+        for row_index, row in enumerate(table.rows):
+            for cell_index, cell in enumerate(row.cells):
+                cell.text = f"r{row_index}c{cell_index}"
+        template = {
+            "styles": {
+                "body": {"font": "\u5b8b\u4f53", "size_pt": 12},
+                "table_caption": {"font": "\u5b8b\u4f53", "size_pt": 10.5},
+                "table_text": {
+                    "font": "\u5b8b\u4f53",
+                    "size_pt": 10.5,
+                    "keep_with_next": True,
+                    "keep_together": True,
+                },
+            },
+            "_runtime": {"fallback_count": 0, "warned_missing_styles": set()},
+        }
+        report = {"paragraphs": [], "tables": [], "warnings": []}
+
+        format_docx.format_normal_paragraphs(doc, template, report)
+        format_docx.format_tables(doc, template, report)
+
+        self.assertTrue(caption.paragraph_format.keep_with_next)
+        self.assertTrue(caption.paragraph_format.keep_together)
+        for row in table.rows:
+            self.assertIsNotNone(row._tr.trPr.find(format_docx.qn("w:cantSplit")))
+        for row in table.rows:
+            for cell in row.cells:
+                for paragraph in cell.paragraphs:
+                    self.assertIsNot(paragraph.paragraph_format.keep_with_next, True)
+                    self.assertIsNot(paragraph.paragraph_format.keep_together, True)
+
+    def test_format_tables_clears_table_cell_numbering_and_list_style(self):
+        doc = Document()
+        table = doc.add_table(rows=1, cols=2)
+        left = table.cell(0, 0).paragraphs[0]
+        right = table.cell(0, 1).paragraphs[0]
+        left.text = "\u9636\u6bb5"
+        right.text = "\u8f93\u51fa"
+        add_direct_numbering(left)
+        right.style = "List Bullet"
+        self.assertIsNotNone(left._p.pPr.find(format_docx.qn("w:numPr")))
+        self.assertEqual(right.style.name, "List Bullet")
+        template = {
+            "styles": {
+                "body": {"font": "\u5b8b\u4f53", "size_pt": 12},
+                "table_text": {"font": "\u5b8b\u4f53", "size_pt": 10.5},
+            },
+            "_runtime": {"fallback_count": 0, "warned_missing_styles": set()},
+        }
+        report = {"tables": [], "warnings": []}
+
+        format_docx.format_tables(doc, template, report)
+
+        self.assertEqual(left.text, "\u9636\u6bb5")
+        self.assertEqual(right.text, "\u8f93\u51fa")
+        self.assertIsNone(left._p.pPr.find(format_docx.qn("w:numPr")))
+        self.assertEqual(right.style.name, "Normal")
+
+    def test_clears_empty_numbered_paragraph_between_caption_and_table(self):
+        doc = Document()
+        doc.add_paragraph("\u88681 \u8bba\u6587\u683c\u5f0f\u5904\u7406\u6d41\u7a0b\u793a\u4f8b")
+        empty = doc.add_paragraph("")
+        add_direct_numbering(empty)
+        doc.add_table(rows=1, cols=1)
+        template = {
+            "styles": {
+                "body": {"font": "\u5b8b\u4f53", "size_pt": 12},
+                "table_caption": {"font": "\u5b8b\u4f53", "size_pt": 10.5},
+                "table_text": {"font": "\u5b8b\u4f53", "size_pt": 10.5},
+            },
+            "_runtime": {"fallback_count": 0, "warned_missing_styles": set()},
+        }
+        report = {"paragraphs": [], "tables": [], "warnings": []}
+
+        format_docx.format_normal_paragraphs(doc, template, report)
+        format_docx.format_tables(doc, template, report)
+
+        self.assertEqual(empty.text, "")
+        self.assertIsNone(empty._p.pPr.find(format_docx.qn("w:numPr")))
+
+    def test_clears_empty_numbered_paragraph_adjacent_to_table(self):
+        doc = Document()
+        doc.add_table(rows=1, cols=1)
+        empty = doc.add_paragraph("")
+        add_direct_numbering(empty)
+        template = {
+            "styles": {
+                "body": {"font": "\u5b8b\u4f53", "size_pt": 12},
+                "table_text": {"font": "\u5b8b\u4f53", "size_pt": 10.5},
+            },
+            "_runtime": {"fallback_count": 0, "warned_missing_styles": set()},
+        }
+        report = {"tables": [], "warnings": []}
+
+        format_docx.format_tables(doc, template, report)
+
+        self.assertEqual(empty.text, "")
+        self.assertIsNone(empty._p.pPr.find(format_docx.qn("w:numPr")))
 
     def test_validate_format_rules_accepts_valid_template(self):
         template = {
@@ -180,6 +474,19 @@ class CoreTests(unittest.TestCase):
     def test_validate_override_rules_rejects_bad_alignment(self):
         errors, _ = format_docx.validate_override_rules({"styles": {"body": {"alignment": "middle"}}})
         self.assertTrue(any("styles.body.alignment" in error for error in errors))
+
+    def test_validate_override_rules_accepts_caption_pagination_controls(self):
+        errors, _ = format_docx.validate_override_rules(
+            {
+                "styles": {
+                    "table_caption": {
+                        "keep_with_next": True,
+                        "keep_together": True,
+                    }
+                }
+            }
+        )
+        self.assertEqual(errors, [])
 
     def test_merge_format_rules_overrides_body_font(self):
         base = format_docx.load_template("default")
