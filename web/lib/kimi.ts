@@ -290,8 +290,67 @@ export function tryParseRequirementsLocally(requirementsText: string): OverrideR
     description: "本地规则快速解析结果",
     ...(Object.keys(page).length > 0 ? { page } : {}),
     ...(Object.keys(styles).length > 0 ? { styles } : {}),
-    warnings: ["已使用本地快速解析，复杂或含糊要求仍建议人工确认。"],
+    warnings: [
+      "已使用本地快速解析，复杂或含糊要求仍建议人工确认。",
+      ...detectRequirementConflicts(requirementsText),
+    ],
   };
+}
+
+export function detectRequirementConflicts(requirementsText: string): string[] {
+  const warnings: string[] = [];
+  const warned = new Set<string>();
+  const seen = new Map<string, { normalizedValue: string; displayValue: string }>();
+  const blocks = requirementsText
+    .split(/[；;。\n\r]+/)
+    .map((block) => block.trim())
+    .filter(Boolean);
+
+  for (const block of blocks) {
+    let currentTargets: string[] = [];
+    const segments = block
+      .split(/[，,]+/)
+      .map((segment) => segment.trim())
+      .filter(Boolean);
+
+    for (const segment of segments) {
+      const detectedTargets = detectStyleTargets(segment);
+      if (detectedTargets.length > 0) {
+        currentTargets = detectedTargets;
+      }
+
+      if (currentTargets.length === 0) {
+        continue;
+      }
+
+      const styleConfig = parseStyleConfig(segment);
+      for (const [field, value] of Object.entries(styleConfig)) {
+        const conflictField = getConflictField(field);
+        if (!conflictField) {
+          continue;
+        }
+
+        const displayValue = formatConflictValue(value);
+        const normalizedValue = normalizeConflictValue(conflictField, value);
+        for (const target of currentTargets) {
+          const key = `${target}.${conflictField}`;
+          const previous = seen.get(key);
+          if (previous && previous.normalizedValue !== normalizedValue) {
+            const warningKey = `${key}:${previous.normalizedValue}:${normalizedValue}`;
+            if (!warned.has(warningKey)) {
+              warnings.push(
+                `${getConflictStyleLabel(target)} ${conflictField} 存在冲突：${previous.displayValue} vs ${displayValue}，已暂按后者覆盖。`,
+              );
+              warned.add(warningKey);
+            }
+          }
+          seen.set(key, { normalizedValue, displayValue });
+        }
+      }
+    }
+  }
+
+  return warnings;
 }
 
 export function detectSuspiciousInferredFields(
@@ -508,8 +567,66 @@ function parseStyleConfig(clause: string): Record<string, unknown> {
   if (/不加粗|取消加粗/.test(clause)) {
     config.bold = false;
   }
+  if (/下划线/.test(clause)) {
+    config.underline = true;
+  }
+  if (/(取消|清除|去掉|删除|不加|不要|无)\s*下划线|下划线\s*(取消|清除|去掉|删除)/.test(clause)) {
+    config.underline = false;
+  }
 
   return config;
+}
+
+const CONFLICT_FIELDS = new Set([
+  "font",
+  "size",
+  "alignment",
+  "line_spacing",
+  "first_line_indent_pt",
+  "bold",
+  "underline",
+]);
+
+const CONFLICT_STYLE_LABELS: Record<string, string> = {
+  paper_title: "论文标题",
+  abstract_title: "摘要标题",
+  abstract_content: "摘要正文",
+  keywords: "关键词",
+  heading_1: "一级标题",
+  heading_2: "二级标题",
+  heading_3: "三级标题",
+  body: "正文",
+  table_caption: "表题",
+  figure_caption: "图题",
+  reference_title: "参考文献标题",
+  reference_item: "参考文献条目",
+  table_text: "表格文字",
+};
+
+function getConflictField(field: string) {
+  const normalizedField = field === "size_cn" || field === "size_pt" ? "size" : field;
+  return CONFLICT_FIELDS.has(normalizedField) ? normalizedField : "";
+}
+
+function normalizeConflictValue(field: string, value: unknown) {
+  if (typeof value === "number") {
+    return `${field}:${value}`;
+  }
+  if (typeof value === "boolean") {
+    return `${field}:${value ? "true" : "false"}`;
+  }
+  return `${field}:${String(value).trim().toLowerCase()}`;
+}
+
+function formatConflictValue(value: unknown) {
+  if (typeof value === "boolean") {
+    return value ? "true" : "false";
+  }
+  return String(value);
+}
+
+function getConflictStyleLabel(styleName: string) {
+  return CONFLICT_STYLE_LABELS[styleName] || styleName;
 }
 
 function parseFont(clause: string) {

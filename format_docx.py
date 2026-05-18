@@ -838,6 +838,12 @@ def merge_format_rules(base_rules, override_rules):
     merged = deepcopy(base_rules)
     overridden_fields = []
     warnings = list(override_rules.get("_override_warnings", []))
+    if isinstance(override_rules.get("warnings"), list):
+        warnings.extend(
+            warning
+            for warning in override_rules["warnings"]
+            if isinstance(warning, str)
+        )
 
     override_page = override_rules.get("page")
     if isinstance(override_page, dict):
@@ -992,6 +998,7 @@ def build_debug_summary(rules) -> dict:
     final_rules = clean_format_rules_for_export(rules)
     override_metadata = rules.get("_override", {"enabled": False})
     overridden_fields = override_metadata.get("overridden_fields", [])
+    override_warnings = list(override_metadata.get("warnings", []))
     return {
         "override_enabled": bool(override_metadata.get("enabled")),
         "overridden_field_count": len(overridden_fields),
@@ -1011,6 +1018,8 @@ def build_debug_summary(rules) -> dict:
             final_rules,
             "styles.reference_item.alignment",
         ),
+        "override_warning_count": len(override_warnings),
+        "override_warnings": override_warnings,
     }
 
 
@@ -1170,6 +1179,18 @@ def is_reference_title(text: str) -> bool:
     return text in {"参考文献", "参考文献：", "参考文献:"}
 
 
+def is_reference_exit_title(text: str) -> bool:
+    """判断参考文献区域后续章节标题，遇到后退出参考文献模式。"""
+    normalized = text.strip()
+    if re.match(r"^(附录(?:[一二三四五六七八九十\dA-Za-z])?|附件|致谢)(?:[：:\s].*)?$", normalized):
+        return True
+    return re.match(
+        r"^(appendix|acknowledgements?|acknowledgments?)(?:[：:\s].*)?$",
+        normalized,
+        re.IGNORECASE,
+    ) is not None
+
+
 def is_title_candidate(text: str) -> bool:
     """标题保护规则：过长或明显句子结尾的段落，不当作标题。"""
     if len(text) > 40:
@@ -1213,7 +1234,10 @@ def detect_paragraph_type(text, index, context):
         return "reference_title"
 
     if context.get("in_reference_section"):
-        return "reference_item"
+        if is_reference_exit_title(text):
+            context["in_reference_section"] = False
+        else:
+            return "reference_item"
 
     if text == "摘要":
         context["in_abstract_section"] = True

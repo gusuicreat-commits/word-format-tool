@@ -70,6 +70,51 @@ class CoreTests(unittest.TestCase):
         result = format_docx.detect_paragraph_type("图1 系统架构图", 0, context)
         self.assertEqual(result, "reference_item")
 
+    def test_reference_mode_exits_on_appendix(self):
+        context = make_context()
+        self.assertEqual(
+            format_docx.detect_paragraph_type("参考文献", 0, context),
+            "reference_title",
+        )
+        self.assertEqual(
+            format_docx.detect_paragraph_type("[1] 张三. 测试文献. 2024.", 1, context),
+            "reference_item",
+        )
+        self.assertEqual(
+            format_docx.detect_paragraph_type(
+                "1. 注意：这一条在参考文献区域内，虽然以数字编号开头，但不应该被识别成正文标题。",
+                2,
+                context,
+            ),
+            "reference_item",
+        )
+
+        appendix_type = format_docx.detect_paragraph_type("附录", 3, context)
+        self.assertNotEqual(appendix_type, "reference_item")
+        self.assertFalse(context["in_reference_section"])
+        self.assertNotEqual(
+            format_docx.detect_paragraph_type("一、访谈提纲", 4, context),
+            "reference_item",
+        )
+        self.assertEqual(
+            format_docx.detect_paragraph_type(
+                "1. 你平时会在哪些学习场景中使用AI工具？",
+                5,
+                context,
+            ),
+            "body",
+        )
+
+    def test_reference_mode_exits_on_english_appendix_titles(self):
+        for text in ["Appendix", "Appendix A", "Acknowledgement", "Acknowledgments"]:
+            context = make_context()
+            context["in_reference_section"] = True
+            self.assertNotEqual(
+                format_docx.detect_paragraph_type(text, 0, context),
+                "reference_item",
+            )
+            self.assertFalse(context["in_reference_section"])
+
     def test_normalize_font_size_xiaosi(self):
         self.assertEqual(format_docx.normalize_font_size("小四"), 12)
 
@@ -614,6 +659,25 @@ class CoreTests(unittest.TestCase):
         )
         self.assertEqual(errors, [])
 
+    def test_merge_format_rules_preserves_override_warnings(self):
+        base = format_docx.load_template("default")
+        warning = "正文 font 存在冲突：宋体 vs 微软雅黑，已暂按后者覆盖。"
+        override = format_docx.normalize_format_rules(
+            {
+                "name": "teacher",
+                "warnings": [warning],
+                "styles": {"body": {"font": "微软雅黑"}},
+            },
+            fill_defaults=False,
+        )
+
+        merged, metadata = format_docx.merge_format_rules(base, override)
+        debug_summary = format_docx.build_debug_summary(merged)
+
+        self.assertIn(warning, metadata["warnings"])
+        self.assertIn(warning, merged["_template_warnings"])
+        self.assertIn(warning, debug_summary["override_warnings"])
+
     def test_merge_format_rules_overrides_body_font(self):
         base = format_docx.load_template("default")
         override = format_docx.normalize_format_rules(
@@ -930,6 +994,85 @@ class CoreTests(unittest.TestCase):
             self.assertEqual(report["paragraphs"][1]["detected_type"], "reference_title")
             self.assertEqual(report["paragraphs"][2]["detected_type"], "reference_item")
             self.assertEqual(report["paragraphs"][2]["applied_style"], "reference_item")
+
+    def test_format_document_exits_reference_mode_before_appendix(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            input_path = temp_path / "input.docx"
+            output_path = temp_path / "output.docx"
+            report_path = temp_path / "report.json"
+            override_path = temp_path / "override.json"
+
+            doc = Document()
+            doc.add_paragraph("测试论文标题")
+            doc.add_paragraph("参考文献")
+            doc.add_paragraph("[1] 张三. 测试文献. 2024.")
+            doc.add_paragraph(
+                "1. 注意：这一条在参考文献区域内，虽然以数字编号开头，但不应该被识别成正文标题。"
+            )
+            doc.add_paragraph("附录")
+            doc.add_paragraph("一、访谈提纲")
+            doc.add_paragraph("1. 你平时会在哪些学习场景中使用AI工具？")
+            doc.add_paragraph("二、问卷题项")
+            doc.add_paragraph("本部分包含问卷题项示例，应作为附录正文处理，而不是参考文献条目。")
+            doc.save(str(input_path))
+            override_path.write_text(
+                json.dumps(
+                    {
+                        "name": "reference_single_spacing",
+                        "styles": {
+                            "reference_item": {
+                                "font": "宋体",
+                                "size_cn": "五号",
+                                "alignment": "left",
+                                "line_spacing": 1,
+                            },
+                            "body": {"line_spacing": 1.5},
+                            "heading_1": {"line_spacing": 1.5},
+                        },
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(PROJECT_ROOT / "format_docx.py"),
+                    str(input_path),
+                    str(output_path),
+                    "--template",
+                    "default",
+                    "--override",
+                    str(override_path),
+                    "--report",
+                    str(report_path),
+                    "--overwrite",
+                ],
+                cwd=str(PROJECT_ROOT),
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+            self.assertEqual(result.returncode, 0, msg=result.stderr)
+            output_doc = Document(str(output_path))
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+            detected_types = [
+                item["detected_type"]
+                for item in report["paragraphs"]
+            ]
+
+            self.assertEqual(detected_types[1], "reference_title")
+            self.assertEqual(detected_types[2], "reference_item")
+            self.assertEqual(detected_types[3], "reference_item")
+            self.assertNotEqual(detected_types[4], "reference_item")
+            self.assertNotEqual(detected_types[5], "reference_item")
+            self.assertNotEqual(detected_types[6], "reference_item")
+            self.assertEqual(output_doc.paragraphs[2].paragraph_format.line_spacing, 1.0)
+            self.assertEqual(output_doc.paragraphs[3].paragraph_format.line_spacing, 1.0)
+            self.assertNotEqual(output_doc.paragraphs[5].paragraph_format.line_spacing, 1.0)
 
 
 if __name__ == "__main__":

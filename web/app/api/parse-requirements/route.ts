@@ -5,6 +5,7 @@ import { NextResponse } from "next/server";
 
 import {
   callKimiForRequirements,
+  detectRequirementConflicts,
   detectSuspiciousInferredFields,
   mockParseRequirements,
   tryParseRequirementsLocally,
@@ -94,6 +95,12 @@ export async function POST(request: Request) {
       }
     }
 
+    const conflictWarnings = detectRequirementConflicts(requirementsText);
+    parsedOverride = mergeWarningsIntoOverride(parsedOverride, conflictWarnings);
+    if (mode === "local" || mode === "mock") {
+      rawModelOutput = JSON.stringify(parsedOverride, null, 2);
+    }
+
     const jobId = crypto.randomUUID();
     const jobDir = path.join(process.cwd(), "tmp", "parse-jobs", jobId);
     const overridePath = path.join(jobDir, "override.json");
@@ -162,6 +169,22 @@ export async function POST(request: Request) {
 
 function fail(message: string, status: number) {
   return NextResponse.json({ success: false, message }, { status });
+}
+
+function mergeWarningsIntoOverride(override: unknown, warnings: string[]) {
+  if (!warnings.length || typeof override !== "object" || override === null || Array.isArray(override)) {
+    return override;
+  }
+
+  const overrideObject = override as Record<string, unknown>;
+  const existingWarnings = Array.isArray(overrideObject.warnings)
+    ? overrideObject.warnings.filter((warning): warning is string => typeof warning === "string")
+    : [];
+
+  return {
+    ...overrideObject,
+    warnings: Array.from(new Set([...existingWarnings, ...warnings])),
+  };
 }
 
 function getErrorMessage(error: unknown) {

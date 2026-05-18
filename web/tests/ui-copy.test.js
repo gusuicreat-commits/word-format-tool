@@ -14,5 +14,9 @@ assert.match(pageSource, /templateName \|\| "default"/);
 assert.match(pageSource, /显示\/隐藏编辑标记/);
 assert.match(pageSource, /不属于正文内容/);
 assert.match(pageSource, /不影响打印和提交/);
+assert.match(pageSource, /检测到格式要求冲突/);
+assert.match(pageSource, /请人工确认/);
+assert.match(pageSource, /已暂按后者覆盖/);
+assert.match(pageSource, /存在格式冲突/);
 
 console.log("ui copy tests passed");

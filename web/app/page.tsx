@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, ReactNode, useEffect, useMemo, useState } from "react";
 
 type TemplateItem = {
   name: string;
@@ -110,6 +110,7 @@ export default function HomePage() {
   const [notices, setNotices] = useState<string[]>([]);
   const [isParsing, setIsParsing] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [conflictAcknowledged, setConflictAcknowledged] = useState(false);
 
   useEffect(() => {
     let active = true;
@@ -152,9 +153,18 @@ export default function HomePage() {
     };
   }, []);
 
+  const hasUnconfirmedConflictWarnings = Boolean(
+    parseResult?.warnings?.some(isConflictWarning) && !conflictAcknowledged,
+  );
   const canSubmit = useMemo(() => {
-    return Boolean(file && templateName && !isSubmitting && !isParsing);
-  }, [file, templateName, isSubmitting, isParsing]);
+    return Boolean(
+      file &&
+        templateName &&
+        !isSubmitting &&
+        !isParsing &&
+        !hasUnconfirmedConflictWarnings,
+    );
+  }, [file, templateName, isSubmitting, isParsing, hasUnconfirmedConflictWarnings]);
 
   function resetFormatFeedback() {
     setResult(null);
@@ -194,6 +204,7 @@ export default function HomePage() {
     setParseResult(null);
     setParseError("");
     setParseStatus("idle");
+    setConflictAcknowledged(false);
     resetFormatFeedback();
   }
 
@@ -226,6 +237,7 @@ export default function HomePage() {
     setParseError("");
     setParseResult(null);
     setParsedOverride(null);
+    setConflictAcknowledged(false);
     resetFormatFeedback();
 
     const trimmedText = requirementsText.trim();
@@ -266,6 +278,7 @@ export default function HomePage() {
 
       setParseResult(data);
       setParsedOverride(data.normalizedOverride || data.override || data.parsedOverride || null);
+      setConflictAcknowledged(false);
       setParseStatus("success");
     } catch (error) {
       setParseStatus("error");
@@ -300,6 +313,12 @@ export default function HomePage() {
 
     if (requirementsText.trim() && !parsedOverride) {
       setFormatError("请先点击“解析格式要求”，确认识别结果后再开始处理。");
+      setFormatStatus("error");
+      return;
+    }
+
+    if (hasUnconfirmedConflictWarnings) {
+      setFormatError("存在格式冲突，请先人工确认后再继续处理。");
       setFormatStatus("error");
       return;
     }
@@ -378,6 +397,13 @@ export default function HomePage() {
   const baseTemplateName =
     result?.report?.baseTemplate?.name || result?.report?.template.name || templateName;
   const parseWarnings = parseResult?.warnings || [];
+  const parseConflictWarnings = parseWarnings.filter(isConflictWarning);
+  const parseRegularWarnings = parseWarnings.filter((warning) => !isConflictWarning(warning));
+  const resultOverrideWarnings = result?.report?.override?.warnings || [];
+  const resultConflictWarnings = resultOverrideWarnings.filter(isConflictWarning);
+  const resultRegularOverrideWarnings = resultOverrideWarnings.filter(
+    (warning) => !isConflictWarning(warning),
+  );
   const selectedTemplateTitle = selectedTemplate
     ? getTemplateTitle(selectedTemplate)
     : getTemplateTitle({ name: templateName || "default", description: "" });
@@ -509,11 +535,24 @@ export default function HomePage() {
             <p className="review-hint">
               下方仅显示老师要求中识别出的覆盖字段；未显示的字段会继续使用基础模板规则。
             </p>
-            {parseWarnings.length ? (
+            {parseConflictWarnings.length ? (
+              <ConflictWarningCard warnings={parseConflictWarnings}>
+                <label className="conflict-confirm">
+                  <input
+                    type="checkbox"
+                    checked={conflictAcknowledged}
+                    disabled={isSubmitting}
+                    onChange={(event) => setConflictAcknowledged(event.target.checked)}
+                  />
+                  <span>我已确认以上冲突，仍然继续处理。</span>
+                </label>
+              </ConflictWarningCard>
+            ) : null}
+            {parseRegularWarnings.length ? (
               <div className="notice-block">
                 <strong>系统提醒：</strong>
                 <ul>
-                  {parseWarnings.map((warning, index) => (
+                  {parseRegularWarnings.map((warning, index) => (
                     <li key={`${warning}-${index}`}>{warning}</li>
                   ))}
                 </ul>
@@ -531,6 +570,11 @@ export default function HomePage() {
               <button className="button" type="submit" disabled={!canSubmit}>
                 {isSubmitting ? "正在修改 Word" : "开始修改 Word"}
               </button>
+              {parseConflictWarnings.length ? (
+                <p className="conflict-action-note">
+                  存在格式冲突，系统将按当前采用规则处理，请确认后继续。
+                </p>
+              ) : null}
               {result?.downloadUrl ? (
                 <a className="button download-button" href={result.downloadUrl}>
                   下载修改后的 Word
@@ -584,6 +628,7 @@ export default function HomePage() {
                           setParsedOverride(null);
                           setParseResult(null);
                           setParseStatus("idle");
+                          setConflictAcknowledged(false);
                         }}
                       >
                         <strong>{getTemplateTitle(template)}</strong>
@@ -626,6 +671,11 @@ export default function HomePage() {
           <button className="button" type="submit" disabled={!canSubmit}>
             {isSubmitting ? "处理中" : "开始处理"}
           </button>
+          {parseConflictWarnings.length ? (
+            <p className="conflict-action-note">
+              存在格式冲突，系统将按当前采用规则处理，请确认后继续。
+            </p>
+          ) : null}
           {result?.downloadUrl ? (
             <a className="button secondary" href={result.downloadUrl}>
               下载修改后的 Word
@@ -668,6 +718,12 @@ export default function HomePage() {
                   </p>
                   <p>少量图表分页可能受 Word 自动排版影响，下载后可按需要手动微调。</p>
                 </div>
+                {resultConflictWarnings.length ? (
+                  <ConflictWarningCard
+                    title="本次处理包含格式冲突警告"
+                    warnings={resultConflictWarnings}
+                  />
+                ) : null}
               </>
             ) : null}
             <div className="source-grid">
@@ -712,9 +768,9 @@ export default function HomePage() {
                   ) : null}
                 </>
               )}
-              {result.report.override?.warnings?.length ? (
+              {resultRegularOverrideWarnings.length ? (
                 <ul className="warning-list">
-                  {result.report.override.warnings.map((warning, index) => (
+                  {resultRegularOverrideWarnings.map((warning, index) => (
                     <li className="warning-item" key={`${warning}-${index}`}>
                       <p>{warning}</p>
                     </li>
@@ -773,6 +829,38 @@ function getParseModeLabel(mode: ParseResult["mode"]) {
   }
 
   return "Kimi API";
+}
+
+function isConflictWarning(warning: string) {
+  return warning.includes("存在冲突");
+}
+
+function ConflictWarningCard({
+  title = "检测到格式要求冲突，请人工确认",
+  warnings,
+  children,
+}: {
+  title?: string;
+  warnings: string[];
+  children?: ReactNode;
+}) {
+  return (
+    <div className="conflict-warning-card" role="alert">
+      <div className="conflict-warning-heading">
+        <span aria-hidden="true">⚠️</span>
+        <strong>{title}</strong>
+      </div>
+      <p>
+        系统发现老师要求中存在互相矛盾的格式规则。当前已暂按后者覆盖前面的要求处理，但建议你确认是否符合老师真实要求。
+      </p>
+      <ul>
+        {warnings.map((warning, index) => (
+          <li key={`${warning}-${index}`}>{warning}</li>
+        ))}
+      </ul>
+      {children}
+    </div>
+  );
 }
 
 function StatusLine({

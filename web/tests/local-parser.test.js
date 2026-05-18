@@ -29,7 +29,7 @@ function loadKimiModule() {
   return moduleShim.exports;
 }
 
-const { tryParseRequirementsLocally } = loadKimiModule();
+const { detectRequirementConflicts, tryParseRequirementsLocally } = loadKimiModule();
 
 const cases = [
   {
@@ -93,5 +93,61 @@ for (const item of cases) {
   assert.ok(result, `Expected parser result for: ${item.text}`);
   assert.deepEqual(result.page, item.page, item.text);
 }
+
+const conflictText = [
+  "正文宋体小四，1.5倍行距，首行缩进2字符；",
+  "正文微软雅黑五号，单倍行距；",
+  "一级标题黑体小三左对齐；",
+  "一级标题宋体四号居中；",
+  "参考文献条目宋体五号，左对齐，单倍行距；",
+  "参考文献条目居中；",
+].join("\n");
+const conflictWarnings = detectRequirementConflicts(conflictText);
+assert.ok(
+  conflictWarnings.some((warning) => warning.includes("正文 font 存在冲突")),
+  conflictWarnings.join("\n"),
+);
+assert.ok(
+  conflictWarnings.some((warning) => warning.includes("正文 size 存在冲突")),
+  conflictWarnings.join("\n"),
+);
+assert.ok(
+  conflictWarnings.some((warning) => warning.includes("正文 line_spacing 存在冲突")),
+  conflictWarnings.join("\n"),
+);
+assert.ok(
+  conflictWarnings.some((warning) => warning.includes("一级标题 font 存在冲突")),
+  conflictWarnings.join("\n"),
+);
+assert.ok(
+  conflictWarnings.some((warning) => warning.includes("一级标题 size 存在冲突")),
+  conflictWarnings.join("\n"),
+);
+assert.ok(
+  conflictWarnings.some((warning) => warning.includes("一级标题 alignment 存在冲突")),
+  conflictWarnings.join("\n"),
+);
+assert.ok(
+  conflictWarnings.some((warning) =>
+    warning.includes("参考文献条目 alignment 存在冲突"),
+  ),
+  conflictWarnings.join("\n"),
+);
+
+const localConflictResult = tryParseRequirementsLocally(conflictText);
+assert.ok(localConflictResult, "Expected local parser to parse conflict text");
+assert.ok(
+  localConflictResult.warnings.some(
+    (warning) => typeof warning === "string" && warning.includes("存在冲突"),
+  ),
+  JSON.stringify(localConflictResult.warnings),
+);
+
+const normalText = "正文宋体小四，1.5倍行距，首行缩进2字符；一级标题黑体小三。";
+assert.equal(
+  detectRequirementConflicts(normalText).filter((warning) => warning.includes("存在冲突"))
+    .length,
+  0,
+);
 
 console.log(`local parser page margin tests passed: ${cases.length}`);
