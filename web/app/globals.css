@@ -1,10 +1,10 @@
 :root {
-  --background: #f5f6f8;
+  --background: #f4f6f9;
   --foreground: #1f2933;
   --muted: #667085;
-  --border: #d8dee8;
+  --border: #d7deea;
   --panel: #ffffff;
-  --subtle: #f9fafc;
+  --subtle: #f8fafc;
   --accent: #1d4ed8;
   --accent-hover: #1e40af;
   --danger: #b42318;
@@ -47,17 +47,18 @@ a {
 .page {
   width: min(1180px, calc(100% - 32px));
   margin: 0 auto;
-  padding: 42px 0 64px;
+  padding: 46px 0 64px;
 }
 
 .header {
-  margin-bottom: 28px;
+  margin-bottom: 30px;
 }
 
 .header h1 {
   margin: 0 0 10px;
   font-size: 34px;
   line-height: 1.2;
+  letter-spacing: 0;
 }
 
 .header p {
@@ -66,17 +67,24 @@ a {
   line-height: 1.7;
 }
 
+.header-subnote {
+  margin-top: 4px !important;
+  color: #475467 !important;
+  font-size: 15px;
+}
+
 .workspace,
 .result {
   display: grid;
-  gap: 18px;
+  gap: 16px;
 }
 
 .panel {
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: 8px;
-  padding: 22px;
+  padding: 24px;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
 }
 
 .main-grid {
@@ -88,11 +96,14 @@ a {
 .step-panel {
   display: grid;
   align-content: start;
-  gap: 12px;
+  gap: 14px;
 }
 
 .step-label {
-  color: var(--accent);
+  color: #111827;
+  border-bottom: 1px solid #e5eaf3;
+  padding-bottom: 10px;
+  font-size: 16px;
   font-weight: 700;
 }
 
@@ -112,7 +123,7 @@ textarea {
   width: 100%;
   border: 1px solid var(--border);
   border-radius: 6px;
-  background: #fff;
+  background: #fcfdff;
   color: var(--foreground);
 }
 
@@ -127,12 +138,13 @@ textarea {
   resize: vertical;
   line-height: 1.55;
   font-family: Consolas, "Microsoft YaHei", monospace;
+  box-shadow: inset 0 1px 2px rgba(15, 23, 42, 0.03);
 }
 
 input:focus,
 select:focus,
 textarea:focus {
-  outline: 2px solid #bfdbfe;
+  outline: 3px solid #dbeafe;
   border-color: #93c5fd;
 }
 
@@ -156,11 +168,11 @@ textarea:focus {
 .template-notice {
   border: 1px solid #bfdbfe;
   border-radius: 6px;
-  background: #eff6ff;
+  background: #f0f7ff;
   color: #1e3a8a;
   padding: 12px 14px;
   display: grid;
-  gap: 4px;
+  gap: 6px;
 }
 
 .template-notice strong,
@@ -170,6 +182,28 @@ textarea:focus {
 
 .template-notice span {
   font-size: 14px;
+}
+
+.inheritance-details {
+  margin-top: 2px;
+  font-size: 14px;
+}
+
+.inheritance-details summary {
+  cursor: pointer;
+  color: #1d4ed8;
+  font-weight: 700;
+}
+
+.inheritance-details p {
+  margin: 10px 0 6px;
+}
+
+.inheritance-details ul {
+  margin: 0;
+  padding-left: 20px;
+  color: #1e3a8a;
+  line-height: 1.7;
 }
 
 .inline-actions,
@@ -196,6 +230,7 @@ textarea:focus {
   padding: 8px 12px;
   background: #fff;
   cursor: pointer;
+  color: #344054;
 }
 
 .text-button:hover:not(:disabled) {
@@ -203,21 +238,45 @@ textarea:focus {
   background: #eff6ff;
 }
 
+.secondary-action {
+  border-color: #b8c2d6;
+  color: #1e3a8a;
+}
+
+.weak-action {
+  border-color: transparent;
+  background: transparent;
+  color: var(--muted);
+}
+
+.weak-action:hover:not(:disabled) {
+  border-color: #e5e7eb;
+  background: #f8fafc;
+  color: #344054;
+}
+
 .advanced-panel {
   padding: 0;
   overflow: hidden;
+  border-color: #e5e7eb;
+  background: #fff;
 }
 
 .advanced-toggle {
   width: 100%;
   border: 0;
-  background: #fff;
+  background: #fbfcfe;
   cursor: pointer;
-  padding: 18px 22px;
+  padding: 14px 18px;
   display: flex;
   justify-content: space-between;
   align-items: center;
   font-weight: 700;
+  color: var(--foreground);
+}
+
+.advanced-toggle:hover {
+  background: #f3f6fb;
 }
 
 .advanced-toggle span {
@@ -228,6 +287,12 @@ textarea:focus {
 .advanced-content {
   border-top: 1px solid var(--border);
   padding: 22px;
+  gap: 18px;
+}
+
+.advanced-section {
+  display: grid;
+  gap: 10px;
 }
 
 .template-grid {
@@ -239,11 +304,11 @@ textarea:focus {
 .template-card {
   position: relative;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: 6px;
   background: #fff;
-  padding: 14px;
+  padding: 12px;
   display: grid;
-  gap: 7px;
+  gap: 6px;
   text-align: left;
   cursor: pointer;
 }
@@ -274,6 +339,11 @@ textarea:focus {
   font-weight: 700;
 }
 
+.developer-option {
+  border-top: 1px dashed var(--border);
+  padding-top: 16px;
+}
+
 .button {
   border: 0;
   border-radius: 6px;
@@ -286,10 +356,12 @@ textarea:focus {
   align-items: center;
   justify-content: center;
   min-height: 42px;
+  font-weight: 700;
 }
 
 .button:hover:not(:disabled) {
   background: var(--accent-hover);
+  box-shadow: 0 1px 4px rgba(29, 78, 216, 0.22);
 }
 
 .button:disabled,
@@ -402,6 +474,7 @@ textarea:focus {
 .section-title {
   margin: 0 0 12px;
   font-size: 18px;
+  letter-spacing: 0;
 }
 
 .source-grid,
@@ -456,28 +529,41 @@ textarea:focus {
 .rule-list li {
   border: 1px solid var(--border);
   border-radius: 6px;
-  padding: 12px;
-  background: #fbfcfe;
+  padding: 14px;
+  background: #fcfdff;
   display: grid;
-  grid-template-columns: 150px minmax(0, 1fr);
-  gap: 12px;
+  grid-template-columns: 170px minmax(0, 1fr);
+  gap: 14px;
 }
 
-.rule-list span {
+.rule-heading {
+  display: grid;
+  align-content: start;
+  gap: 5px;
+}
+
+.rule-heading strong {
+  font-size: 15px;
+}
+
+.rule-heading span,
+.rule-list > li > span {
   color: var(--muted);
   line-height: 1.6;
+  font-size: 13px;
 }
 
 .field-list {
   display: grid;
-  gap: 8px;
+  gap: 7px;
   margin: 0;
 }
 
 .field-list div {
   display: grid;
-  grid-template-columns: 110px minmax(0, 1fr);
-  gap: 10px;
+  grid-template-columns: 120px minmax(0, 1fr);
+  gap: 12px;
+  align-items: baseline;
 }
 
 .field-list dt {
@@ -488,11 +574,23 @@ textarea:focus {
   margin: 0;
   color: var(--foreground);
   overflow-wrap: anywhere;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.field-value {
+  font-weight: 700;
 }
 
 .field-list code {
-  color: #1e40af;
+  color: #475467;
+  background: #f1f5f9;
+  border-radius: 4px;
+  padding: 1px 5px;
   font-family: Consolas, monospace;
+  font-size: 12px;
 }
 
 .review-hint {

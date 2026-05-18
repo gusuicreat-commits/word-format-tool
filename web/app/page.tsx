@@ -413,12 +413,13 @@ export default function HomePage() {
       <header className="header">
         <h1>Word 论文格式修改器</h1>
         <p>上传 Word 论文，粘贴老师的格式要求，系统将自动规范论文格式。</p>
+        <p className="header-subnote">AI 负责理解要求，程序负责修改 Word。</p>
       </header>
 
       <form className="workspace" onSubmit={handleSubmit}>
         <section className="main-grid">
           <div className="panel step-panel">
-            <div className="step-label">1. 上传论文</div>
+            <div className="step-label">步骤 1：上传论文</div>
             <label className="field-label" htmlFor="file">
               Word 论文
             </label>
@@ -438,7 +439,7 @@ export default function HomePage() {
           </div>
 
           <div className="panel step-panel">
-            <div className="step-label">2. 粘贴老师的格式要求</div>
+            <div className="step-label">步骤 2：粘贴格式要求</div>
             <label className="field-label" htmlFor="requirementsText">
               格式要求
             </label>
@@ -455,7 +456,7 @@ export default function HomePage() {
             </div>
             <div className="inline-actions">
               <button
-                className="button"
+                className="button primary-button"
                 type="button"
                 disabled={isParsing || !requirementsText.trim()}
                 onClick={handleParseRequirements}
@@ -463,7 +464,7 @@ export default function HomePage() {
                 {isParsing ? "解析中" : "解析格式要求"}
               </button>
               <button
-                className="text-button"
+                className="text-button secondary-action"
                 type="button"
                 disabled={isParsing || isSubmitting}
                 onClick={() => handleRequirementsChange(REQUIREMENTS_EXAMPLE)}
@@ -471,7 +472,7 @@ export default function HomePage() {
                 使用示例
               </button>
               <button
-                className="text-button"
+                className="text-button weak-action"
                 type="button"
                 disabled={isParsing || isSubmitting || !requirementsText}
                 onClick={() => handleRequirementsChange("")}
@@ -494,8 +495,20 @@ export default function HomePage() {
             当前基础模板：{selectedTemplateTitle}（{templateName || "default"}）
           </strong>
           <span>
-            未明确说明的格式将继承基础模板，系统只会用老师要求覆盖其中对应字段。
+            未明确说明的格式将继承基础模板，例如正文、标题、摘要关键词、图题表题、参考文献和页边距。
           </span>
+          <details className="inheritance-details">
+            <summary>查看继承内容</summary>
+            <p>默认继承内容包括：</p>
+            <ul>
+              <li>正文基础格式</li>
+              <li>一级/二级/三级标题格式</li>
+              <li>摘要和关键词格式</li>
+              <li>图题和表题格式</li>
+              <li>参考文献格式</li>
+              <li>页边距等页面基础设置</li>
+            </ul>
+          </details>
         </section>
 
         {parseResult?.success ? (
@@ -511,14 +524,18 @@ export default function HomePage() {
               <ul className="rule-list">
                 {parseResult.summary.map((item) => (
                   <li key={`${item.type}-${item.description}`}>
-                    <strong>{item.label}</strong>
+                    <div className="rule-heading">
+                      <strong>{item.label}</strong>
+                      <span>{getRuleGroupDescription(item.type)}</span>
+                    </div>
                     {item.fields?.length ? (
                       <dl className="field-list">
                         {item.fields.map((field) => (
                           <div key={`${item.type}-${field.key}`}>
                             <dt>{field.label}</dt>
                             <dd>
-                              <code>{field.key}</code> = {field.value}
+                              <span className="field-value">{field.value}</span>
+                              <code>{field.key}</code>
                             </dd>
                           </div>
                         ))}
@@ -567,7 +584,7 @@ export default function HomePage() {
               <DebugBlock title="debugSummary" value={parseResult.debugSummary} />
             </details>
             <div className="result-actions">
-              <button className="button" type="submit" disabled={!canSubmit}>
+              <button className="button primary-button" type="submit" disabled={!canSubmit}>
                 {isSubmitting ? "正在修改 Word" : "开始修改 Word"}
               </button>
               {parseConflictWarnings.length ? (
@@ -598,16 +615,16 @@ export default function HomePage() {
             aria-expanded={advancedOpen}
             onClick={() => setAdvancedOpen((open) => !open)}
           >
-            高级设置
+            高级设置（一般无需修改）
             <span>{advancedOpen ? "收起" : "展开"}</span>
           </button>
 
           {advancedOpen ? (
             <div className="advanced-content">
-              <div>
+              <div className="advanced-section">
                 <h2 className="section-title">基础模板</h2>
                 <p className="hint">
-                  默认使用通用默认模板。需要课程论文排版时，可以切换模板。
+                  默认使用通用默认模板。只有明确知道需要课程论文模板时，再切换这里。
                 </p>
                 <div className="template-grid">
                   {templates.length === 0 ? (
@@ -632,7 +649,7 @@ export default function HomePage() {
                         }}
                       >
                         <strong>{getTemplateTitle(template)}</strong>
-                        <span>{template.description || "暂无模板说明"}</span>
+                        <span>{getTemplateCardDescription(template)}</span>
                         <small>模板名：{template.name}</small>
                         {template.name === templateName ? <em>已选择</em> : null}
                       </button>
@@ -641,9 +658,9 @@ export default function HomePage() {
                 </div>
               </div>
 
-              <div className="field">
+              <div className="field developer-option">
                 <label className="field-label" htmlFor="override">
-                  上传自定义覆盖规则 JSON 文件，可选
+                  开发者选项：上传自定义覆盖规则 JSON
                 </label>
                 <input
                   id="override"
@@ -655,7 +672,7 @@ export default function HomePage() {
                   }
                 />
                 <div className="hint">
-                  作为高级备用方式，仅支持 .json，最大 1MB。若已经解析出文本框规则，将优先使用解析结果。
+                  仅供调试或高级用户使用。普通用户请直接粘贴老师的自然语言格式要求。
                 </div>
                 <div className="file-summary">
                   {overrideFile
@@ -668,7 +685,7 @@ export default function HomePage() {
         </section>
 
         <section className="submit-row">
-          <button className="button" type="submit" disabled={!canSubmit}>
+          <button className="button primary-button" type="submit" disabled={!canSubmit}>
             {isSubmitting ? "处理中" : "开始处理"}
           </button>
           {parseConflictWarnings.length ? (
@@ -817,6 +834,38 @@ function getTemplateTitle(template: TemplateItem) {
   }
 
   return template.displayName || template.description || template.name;
+}
+
+function getTemplateCardDescription(template: TemplateItem) {
+  if (template.name === "default") {
+    return "适合一般论文、报告、作业，格式较稳妥。";
+  }
+
+  if (template.name === "course_paper") {
+    return "标题更突出，适合课程论文、结课论文等场景。";
+  }
+
+  return template.description || "自定义模板。";
+}
+
+function getRuleGroupDescription(type: string) {
+  const descriptions: Record<string, string> = {
+    paper_title: "论文主标题格式",
+    abstract_title: "摘要标题格式",
+    abstract_content: "摘要正文格式",
+    keywords: "关键词段落格式",
+    heading_1: "一级标题格式",
+    heading_2: "二级标题格式",
+    heading_3: "三级标题格式",
+    body: "正文段落格式",
+    table_caption: "表题格式",
+    figure_caption: "图题格式",
+    reference_title: "参考文献标题格式",
+    reference_item: "参考文献条目格式",
+    table_text: "表格文字格式",
+  };
+
+  return descriptions[type] || "格式规则";
 }
 
 function getParseModeLabel(mode: ParseResult["mode"]) {

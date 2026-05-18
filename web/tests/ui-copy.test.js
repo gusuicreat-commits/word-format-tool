@@ -4,9 +4,16 @@ const path = require("node:path");
 
 const pageSource = fs.readFileSync(path.join(__dirname, "..", "app", "page.tsx"), "utf8");
 
+assert.match(pageSource, /步骤 1：上传论文/);
+assert.match(pageSource, /步骤 2：粘贴格式要求/);
+assert.match(pageSource, /AI 负责理解要求，程序负责修改 Word/);
 assert.match(pageSource, /当前基础模板：/);
 assert.match(pageSource, /未明确说明的格式将继承基础模板/);
-assert.match(pageSource, /系统只会用老师要求覆盖其中对应字段/);
+assert.match(pageSource, /正文、标题、摘要关键词、图题表题、参考文献和页边距/);
+assert.match(pageSource, /高级设置（一般无需修改）/);
+assert.match(pageSource, /查看继承内容/);
+assert.match(pageSource, /开发者选项/);
+assert.match(pageSource, /普通用户请直接粘贴老师的自然语言格式要求/);
 assert.match(pageSource, /下方仅显示老师要求中识别出的覆盖字段/);
 assert.match(pageSource, /通用默认模板/);
 assert.match(pageSource, /课程论文模板/);
