@@ -11,7 +11,7 @@ export function buildRequirementsPrompt(requirementsText: string) {
     "你是论文格式要求解析器，只能把自然语言格式要求转成 override JSON。",
     "不要读取或修改 Word，不要生成代码、命令、Markdown 或解释文字。",
     "只输出一个 JSON 对象。",
-    "顶层字段只能使用 name、description、page、styles、warnings。",
+    "顶层字段只能使用 name、description、page、styles、latin_digit_format、warnings。",
     "page 字段只能使用 top_margin_cm、bottom_margin_cm、left_margin_cm、right_margin_cm，单位为 cm 的数字。例如左页边距 3cm 输出 page.left_margin_cm=3。",
     "styles 类型只能使用 paper_title、abstract_title、abstract_content、keywords、abstract_en_title、abstract_en_content、keywords_en、heading_1、heading_2、heading_3、body、table_caption、figure_caption、reference_title、reference_item、table_text。",
     "样式字段只能使用 font、size_pt、size_cn、bold、italic、underline、alignment、line_spacing、first_line_indent_pt、space_before_pt、space_after_pt。",
@@ -24,6 +24,8 @@ export function buildRequirementsPrompt(requirementsText: string) {
     "reference_title 的居中、加粗等设置不能复制到 reference_item，除非原文明确写参考文献条目也居中或加粗。",
     "正文要求只作用于 body；除非原文明确写“全文统一”“摘要和正文一致”，不要扩展到摘要、关键词或参考文献。",
     "中文摘要/关键词只作用于 abstract_content 和 keywords；英文摘要/Abstract 只作用于 abstract_en_content；英文关键词/Keywords 只作用于 keywords_en。",
+    "只有原文明确写“英文和数字”“英文字母和阿拉伯数字”“全文英文数字”“正文中英文数字”等要求时，才输出 latin_digit_format。英文摘要 Times New Roman 不等于全局英文数字规则。",
+    "latin_digit_format 字段只能使用 font、size_pt、size_cn、scope；scope 只能是 global 或 body。未单独要求英文数字字号时，不要输出 size_pt 或 size_cn。",
     "遇到“按学校要求”“排版规范”“标题清晰”等模糊要求，不要写入 styles，可以写入 warnings。",
     "正例：输入“一级标题黑体小三。”，只输出 heading_1.font=黑体 和 heading_1.size_cn=小三；不要输出居中、加粗或行距。",
     "正例：输入“图题和表题宋体五号居中，参考文献宋体五号。”，居中只作用于 figure_caption 和 table_caption，不能作用于 reference_item。",
@@ -138,6 +140,7 @@ export function mockParseRequirements(requirementsText: string): OverrideRules {
   const compactText = requirementsText.replace(/\s+/g, "");
   const page = parsePageConfig(requirementsText);
   const styles: NonNullable<OverrideRules["styles"]> = {};
+  const latinDigitFormat = parseLatinDigitFormat(requirementsText);
 
   if (/正文/.test(compactText) || /宋体小四/.test(compactText)) {
     styles.body = {};
@@ -223,7 +226,7 @@ export function mockParseRequirements(requirementsText: string): OverrideRules {
     }
   }
 
-  if (Object.keys(styles).length === 0 && Object.keys(page).length === 0) {
+  if (Object.keys(styles).length === 0 && Object.keys(page).length === 0 && !latinDigitFormat) {
     styles.body = {
       font: "宋体",
       size_cn: "小四",
@@ -234,6 +237,7 @@ export function mockParseRequirements(requirementsText: string): OverrideRules {
     name: "mock_ai_parsed_requirements",
     description: "本地 mock 解析结果，仅用于开发测试",
     ...(Object.keys(page).length > 0 ? { page } : {}),
+    ...(latinDigitFormat ? { latin_digit_format: latinDigitFormat } : {}),
     styles,
     warnings: [
       "当前为 mock 解析结果，仅用于本地开发测试。正式使用请配置 KIMI_API_KEY。",
@@ -244,6 +248,7 @@ export function mockParseRequirements(requirementsText: string): OverrideRules {
 export function tryParseRequirementsLocally(requirementsText: string): OverrideRules | null {
   const page: NonNullable<OverrideRules["page"]> = parsePageConfig(requirementsText);
   const styles: NonNullable<OverrideRules["styles"]> = {};
+  const latinDigitFormat = parseLatinDigitFormat(requirementsText);
   const blocks = requirementsText
     .split(/[；;。\n\r]+/)
     .map((block) => block.trim())
@@ -258,6 +263,9 @@ export function tryParseRequirementsLocally(requirementsText: string): OverrideR
 
     for (const segment of segments) {
       Object.assign(page, parsePageConfig(segment));
+      if (isLatinDigitOnlyClause(segment)) {
+        continue;
+      }
 
       const detectedTargets = detectStyleTargets(segment);
       if (detectedTargets.length > 0) {
@@ -282,7 +290,7 @@ export function tryParseRequirementsLocally(requirementsText: string): OverrideR
     }
   }
 
-  if (Object.keys(styles).length === 0 && Object.keys(page).length === 0) {
+  if (Object.keys(styles).length === 0 && Object.keys(page).length === 0 && !latinDigitFormat) {
     return null;
   }
 
@@ -291,6 +299,7 @@ export function tryParseRequirementsLocally(requirementsText: string): OverrideR
     description: "本地规则快速解析结果",
     ...(Object.keys(page).length > 0 ? { page } : {}),
     ...(Object.keys(styles).length > 0 ? { styles } : {}),
+    ...(latinDigitFormat ? { latin_digit_format: latinDigitFormat } : {}),
     warnings: [
       "已使用本地快速解析，复杂或含糊要求仍建议人工确认。",
       ...detectRequirementConflicts(requirementsText),
@@ -315,6 +324,10 @@ export function detectRequirementConflicts(requirementsText: string): string[] {
       .filter(Boolean);
 
     for (const segment of segments) {
+      if (isLatinDigitOnlyClause(segment)) {
+        continue;
+      }
+
       const detectedTargets = detectStyleTargets(segment);
       if (detectedTargets.length > 0) {
         currentTargets = detectedTargets;
@@ -497,7 +510,56 @@ function fillMissingMargins(page: Record<string, number>, value: number) {
   page.right_margin_cm ??= value;
 }
 
+function parseLatinDigitFormat(requirementsText: string) {
+  const clauses = requirementsText
+    .split(/[；;。\n\r]+/)
+    .map((clause) => clause.trim())
+    .filter(Boolean);
+
+  let parsed: Record<string, unknown> | null = null;
+  for (const clause of clauses) {
+    if (!hasExplicitLatinDigitTarget(clause)) {
+      continue;
+    }
+
+    const font = parseFont(clause);
+    const sizeCn = parseChineseSize(clause);
+    if (!font && !sizeCn) {
+      continue;
+    }
+
+    const format: Record<string, unknown> = {
+      ...(parsed || {}),
+      ...(font ? { font } : {}),
+      ...(sizeCn ? { size_cn: sizeCn } : {}),
+      scope: /正文/.test(clause) && !/全文/.test(clause) ? "body" : "global",
+    };
+    parsed = format;
+  }
+
+  return parsed;
+}
+
+function hasExplicitLatinDigitTarget(clause: string) {
+  if (/(摘要|Abstract|关键词|Keywords|Key\s*words)/i.test(clause) && !/(全文|正文)/.test(clause)) {
+    return false;
+  }
+
+  const compactClause = clause.replace(/\s+/g, "");
+  const hasLatin = /(英文(?:字母|字符)?|英文字母|拉丁字母)/.test(compactClause);
+  const hasDigit = /(阿拉伯数字|数字)/.test(compactClause);
+  return hasLatin && hasDigit;
+}
+
+function isLatinDigitOnlyClause(clause: string) {
+  return hasExplicitLatinDigitTarget(clause);
+}
+
 function detectStyleTargets(clause: string) {
+  if (isLatinDigitOnlyClause(clause)) {
+    return [];
+  }
+
   const targets: string[] = [];
   const hasEnglishAbstract = /英文摘要|Abstract/i.test(clause);
   const hasEnglishKeywords = /英文关键词|英文关键字|Keywords|Key\s*words/i.test(clause);
@@ -506,6 +568,9 @@ function detectStyleTargets(clause: string) {
     targets.push("paper_title");
   }
   if (/正文/.test(clause)) {
+    targets.push("body");
+  }
+  if (isGenericChineseBodyStyleClause(clause)) {
     targets.push("body");
   }
   if (/一级标题|一[级級]标题/.test(clause)) {
@@ -547,6 +612,10 @@ function detectStyleTargets(clause: string) {
 }
 
 function parseStyleConfig(clause: string): Record<string, unknown> {
+  if (isLatinDigitOnlyClause(clause)) {
+    return {};
+  }
+
   const config: Record<string, unknown> = {};
   const font = parseFont(clause);
   const sizeCn = parseChineseSize(clause);
@@ -586,6 +655,14 @@ function parseStyleConfig(clause: string): Record<string, unknown> {
   }
 
   return config;
+}
+
+function isGenericChineseBodyStyleClause(clause: string) {
+  const compactClause = clause.replace(/\s+/g, "");
+  return (
+    /^中文/.test(compactClause) &&
+    !/(摘要|关键词|关键字|标题|题目|参考文献|图题|表题|目录)/.test(compactClause)
+  );
 }
 
 const CONFLICT_FIELDS = new Set([

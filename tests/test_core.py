@@ -40,6 +40,13 @@ def has_direct_numbering(paragraph):
     return p_pr is not None and p_pr.find(format_docx.qn("w:numPr")) is not None
 
 
+def get_run_font_mapping(run, field):
+    r_pr = run._r.rPr
+    if r_pr is None or r_pr.rFonts is None:
+        return None
+    return r_pr.rFonts.get(format_docx.qn(f"w:{field}"))
+
+
 class CoreTests(unittest.TestCase):
     def format_paragraphs_for_report(self, paragraphs, override=None, add_table=False):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -316,8 +323,34 @@ class CoreTests(unittest.TestCase):
             self.assertIn(module_key, module_status)
         self.assertEqual(module_status["header_footer"]["status"], "not_requested")
         self.assertEqual(module_status["page_number"]["status"], "not_requested")
+        self.assertEqual(module_status["latin_digit_format"]["status"], "not_requested")
+        self.assertEqual(module_status["latin_digit_format"]["action"], "skipped")
         self.assertEqual(module_status["abstract_en"]["status"], "not_detected")
         self.assertEqual(module_status["toc"]["status"], "not_detected")
+
+    def test_module_status_records_latin_digit_format_processing(self):
+        report = self.format_paragraphs_for_report(
+            ["测试论文标题", "正文包含 AI 和 2025。"],
+            override={
+                "name": "latin_digit_teacher_rule",
+                "latin_digit_format": {
+                    "font": "Times New Roman",
+                    "size_cn": "小四",
+                    "scope": "global",
+                },
+            },
+        )
+        module_status = report["module_status"]["latin_digit_format"]
+
+        self.assertEqual(module_status["status"], "detected")
+        self.assertEqual(module_status["action"], "formatted")
+        self.assertGreater(module_status["count"], 0)
+        self.assertEqual(
+            report["final_rules_debug"]["debug_summary"]["module_status"][
+                "latin_digit_format"
+            ]["action"],
+            "formatted",
+        )
 
     def test_normalize_font_size_xiaosi(self):
         self.assertEqual(format_docx.normalize_font_size("小四"), 12)
@@ -584,6 +617,101 @@ class CoreTests(unittest.TestCase):
         self.assertTrue(has_direct_numbering(heading_1))
         self.assertTrue(has_direct_numbering(heading_2))
         self.assertTrue(has_direct_numbering(heading_3))
+
+    def test_latin_digit_format_splits_mixed_body_run_without_changing_text(self):
+        doc = Document()
+        doc.add_paragraph("论文标题")
+        paragraph = doc.add_paragraph()
+        paragraph.add_run("人工智能 AI 2.0 技术推动 education reform in 2025。")
+        original_text = paragraph.text
+        template = {
+            "styles": {
+                "paper_title": {"font": "黑体", "size_pt": 15},
+                "body": {"font": "宋体", "size_pt": 12},
+            },
+            "latin_digit_format": {
+                "font": "Times New Roman",
+                "size_pt": 12,
+                "scope": "global",
+            },
+            "_runtime": {"fallback_count": 0, "warned_missing_styles": set()},
+        }
+        report = {"paragraphs": [], "warnings": []}
+
+        format_docx.format_normal_paragraphs(doc, template, report)
+
+        self.assertEqual(paragraph.text, original_text)
+        self.assertGreater(len(paragraph.runs), 1)
+        latin_runs = [
+            run for run in paragraph.runs if format_docx.LATIN_DIGIT_TEXT_PATTERN.search(run.text)
+        ]
+        self.assertEqual(
+            "".join(run.text for run in latin_runs),
+            "AI2.0educationreformin2025",
+        )
+        for run in latin_runs:
+            self.assertEqual(get_run_font_mapping(run, "ascii"), "Times New Roman")
+            self.assertEqual(get_run_font_mapping(run, "hAnsi"), "Times New Roman")
+            self.assertAlmostEqual(run.font.size.pt, 12)
+            self.assertFalse(run.font.underline)
+
+        chinese_runs = [run for run in paragraph.runs if "人工智能" in run.text]
+        self.assertEqual(len(chinese_runs), 1)
+        self.assertEqual(get_run_font_mapping(chinese_runs[0], "eastAsia"), "宋体")
+
+    def test_latin_digit_format_preserves_heading_style_and_numbering(self):
+        doc = Document()
+        doc.add_paragraph("论文标题")
+        heading = doc.add_paragraph("AI技术在2025年的发展", style="Heading 2")
+        add_direct_numbering(heading)
+        original_text = heading.text
+        template = {
+            "styles": {
+                "paper_title": {"font": "黑体", "size_pt": 15},
+                "body": {"font": "宋体", "size_pt": 12},
+                "heading_2": {"font": "黑体", "size_pt": 14},
+            },
+            "latin_digit_format": {"font": "Times New Roman", "scope": "global"},
+            "_runtime": {"fallback_count": 0, "warned_missing_styles": set()},
+        }
+        report = {"paragraphs": [], "warnings": []}
+
+        format_docx.format_normal_paragraphs(doc, template, report)
+
+        self.assertEqual(heading.text, original_text)
+        self.assertEqual(heading.style.name, "Heading 2")
+        self.assertTrue(has_direct_numbering(heading))
+        latin_runs = [
+            run for run in heading.runs if format_docx.LATIN_DIGIT_TEXT_PATTERN.search(run.text)
+        ]
+        self.assertEqual("".join(run.text for run in latin_runs), "AI2025")
+        for run in latin_runs:
+            self.assertEqual(get_run_font_mapping(run, "ascii"), "Times New Roman")
+            self.assertEqual(get_run_font_mapping(run, "hAnsi"), "Times New Roman")
+
+    def test_latin_digit_format_protects_toc_text(self):
+        doc = Document()
+        doc.add_paragraph("论文标题")
+        doc.add_paragraph("目录")
+        toc_entry = doc.add_paragraph("1.1 AI研究背景 2")
+        original_text = toc_entry.text
+        template = {
+            "styles": {
+                "paper_title": {"font": "黑体", "size_pt": 15},
+                "body": {"font": "宋体", "size_pt": 12},
+            },
+            "latin_digit_format": {"font": "Times New Roman", "scope": "global"},
+            "_runtime": {"fallback_count": 0, "warned_missing_styles": set()},
+        }
+        report = {"paragraphs": [], "warnings": []}
+
+        context = format_docx.format_normal_paragraphs(doc, template, report)
+
+        self.assertEqual(toc_entry.text, original_text)
+        self.assertEqual(len(toc_entry.runs), 1)
+        self.assertNotEqual(get_run_font_mapping(toc_entry.runs[0], "ascii"), "Times New Roman")
+        self.assertGreater(context["module_counts"].get("toc", 0), 0)
+        self.assertEqual(context["module_counts"].get("latin_digit_format", 0), 0)
 
     def test_format_document_preserves_paragraph_text_order(self):
         with tempfile.TemporaryDirectory() as temp_dir:

@@ -116,6 +116,7 @@ const MODULE_STATUS_ORDER = [
   "reference",
   "appendix",
   "page",
+  "latin_digit_format",
   "header_footer",
   "page_number",
 ];
@@ -940,6 +941,7 @@ function getModuleStatusLabel(moduleKey: string) {
     reference: "参考文献",
     appendix: "附录",
     page: "页面设置",
+    latin_digit_format: "英文和数字",
     header_footer: "页眉页脚",
     page_number: "页码",
   };

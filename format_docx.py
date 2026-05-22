@@ -1,4 +1,4 @@
-"""文格 Lite V2.5.0：本地版 Word 论文格式修改器。
+"""文格 Lite V2.6.0：本地版 Word 论文格式修改器。
 
 用法：
     python format_docx.py input.docx output.docx --overwrite
@@ -25,6 +25,7 @@ try:
     from docx.oxml.ns import qn
     from docx.shared import Cm, Pt, RGBColor
     from docx.text.paragraph import Paragraph
+    from docx.text.run import Run
 except ImportError:
     Document = None
     WD_ALIGN_PARAGRAPH = None
@@ -34,11 +35,12 @@ except ImportError:
     Pt = None
     RGBColor = None
     Paragraph = None
+    Run = None
 
 
 BASE_DIR = Path(__file__).resolve().parent
 DEFAULT_TEMPLATE_PATH = BASE_DIR / "templates" / "default.json"
-VERSION = "V2.5.0"
+VERSION = "V2.6.0"
 
 CHINESE_NUMBER = "一二三四五六七八九十"
 PROTECTED_FIRST_PARAGRAPHS = {
@@ -61,6 +63,7 @@ PROTECTED_FIRST_PARAGRAPHS = {
 }
 SENTENCE_ENDING_PUNCTUATION = "。？！?!.！"
 ALLOWED_ALIGNMENTS = {"left", "center", "right", "justify"}
+LATIN_DIGIT_SCOPES = {"global", "body"}
 PAGE_MARGIN_FIELDS = [
     "top_margin_cm",
     "bottom_margin_cm",
@@ -193,6 +196,7 @@ MODULE_STATUS_KEYS = [
     "reference",
     "appendix",
     "page",
+    "latin_digit_format",
     "header_footer",
     "page_number",
 ]
@@ -211,6 +215,7 @@ MODULE_DEFAULT_NOTES = {
     "table_caption": "未检测到表题，未处理",
     "reference": "未检测到参考文献，未处理",
     "appendix": "未检测到附录，未处理",
+    "latin_digit_format": "老师要求中未出现英文/数字格式要求，未处理",
     "header_footer": "老师要求中未出现页眉页脚要求，未处理",
     "page_number": "老师要求中未出现页码要求，未处理",
 }
@@ -245,7 +250,7 @@ class ReportError(UserFacingError):
 def parse_args(argv=None) -> argparse.Namespace:
     """解析命令行参数。"""
     parser = argparse.ArgumentParser(
-        description="文格 Lite V2.5.0：基于规则识别段落，按 JSON 模板修改 .docx，并可生成处理报告。"
+        description="文格 Lite V2.6.0：基于规则识别段落，按 JSON 模板修改 .docx，并可生成处理报告。"
     )
     parser.add_argument("input_docx", nargs="?", help="输入 Word 文件路径，例如 samples/input.docx")
     parser.add_argument("output_docx", nargs="?", help="输出 Word 文件路径，例如 samples/output.docx")
@@ -545,6 +550,29 @@ def normalize_format_rules(template, fill_defaults=True):
                 normalized_page[field] = normalize_page_margin(normalized_page[field])
         normalized_template["page"] = normalized_page
 
+    latin_digit_format = normalized_template.get("latin_digit_format")
+    if isinstance(latin_digit_format, dict):
+        normalized_latin_digit_format = dict(latin_digit_format)
+        if "size_cn" in normalized_latin_digit_format:
+            size_cn_value = normalized_latin_digit_format["size_cn"]
+            size_cn_pt = normalize_font_size(size_cn_value)
+            if (
+                "size_pt" in normalized_latin_digit_format
+                and is_number(normalized_latin_digit_format["size_pt"])
+            ):
+                if (
+                    abs(float(normalized_latin_digit_format["size_pt"]) - float(size_cn_pt))
+                    > 0.01
+                ):
+                    warnings.append(
+                        f"英文/数字格式 size_cn={size_cn_value} 与 "
+                        f"size_pt={normalized_latin_digit_format['size_pt']} 不一致，"
+                        "已优先使用 size_pt。"
+                    )
+            else:
+                normalized_latin_digit_format["size_pt"] = size_cn_pt
+        normalized_template["latin_digit_format"] = normalized_latin_digit_format
+
     styles = normalized_template.get("styles")
     if not isinstance(styles, dict):
         normalized_template["_template_warnings"] = warnings
@@ -642,6 +670,14 @@ def validate_format_rules(template):
         errors.append("模板字段 styles 应为对象。")
         has_structural_error = True
 
+    if "latin_digit_format" in template:
+        latin_errors, latin_warnings = validate_latin_digit_format(
+            template["latin_digit_format"],
+            "模板字段 latin_digit_format",
+        )
+        errors.extend(latin_errors)
+        warnings.extend(latin_warnings)
+
     if has_structural_error:
         return errors, warnings
 
@@ -695,8 +731,11 @@ def validate_override_rules(override):
 
     has_page = "page" in override
     has_styles = "styles" in override
-    if not has_page and not has_styles:
-        warnings.append("自定义覆盖规则中没有 page 或 styles，不会产生实际覆盖效果。")
+    has_latin_digit_format = "latin_digit_format" in override
+    if not has_page and not has_styles and not has_latin_digit_format:
+        warnings.append(
+            "自定义覆盖规则中没有 page、styles 或 latin_digit_format，不会产生实际覆盖效果。"
+        )
 
     if has_page:
         if not isinstance(override["page"], dict):
@@ -729,6 +768,45 @@ def validate_override_rules(override):
                     warning.replace("模板字段", "自定义覆盖规则字段")
                     for warning in style_warnings
                 )
+
+    if has_latin_digit_format:
+        latin_errors, latin_warnings = validate_latin_digit_format(
+            override["latin_digit_format"],
+            "自定义覆盖规则字段 latin_digit_format",
+        )
+        errors.extend(latin_errors)
+        warnings.extend(latin_warnings)
+
+    return errors, warnings
+
+
+def validate_latin_digit_format(config, field_path: str):
+    """检查英文/数字字符格式配置。"""
+    errors = []
+    warnings = []
+    allowed_fields = {"font", "size_pt", "size_cn", "scope"}
+
+    if not isinstance(config, dict):
+        return [f"{field_path} 应为对象。"], warnings
+
+    for field in config:
+        if field not in allowed_fields:
+            warnings.append(f"{field_path}.{field} 不是标准字段，将被保留但不会被使用。")
+
+    if "font" in config and not isinstance(config["font"], str):
+        errors.append(f"{field_path}.font 应为字符串，例如 \"Times New Roman\"。")
+    if "size_pt" in config and not is_number(config["size_pt"]):
+        errors.append(f"{field_path}.size_pt 应为数字，例如 12。")
+    if "size_cn" in config:
+        size_cn = config["size_cn"]
+        if not isinstance(size_cn, str):
+            errors.append(f"{field_path}.size_cn 应为字符串，例如 \"小四\"。")
+        elif size_cn.strip() not in CHINESE_FONT_SIZE_MAP:
+            errors.append(f"{field_path}.size_cn 使用了未知中文字号：{size_cn}。")
+    if "scope" in config:
+        scope = config["scope"]
+        if not isinstance(scope, str) or scope not in LATIN_DIGIT_SCOPES:
+            errors.append(f"{field_path}.scope 只能是 global 或 body。")
 
     return errors, warnings
 
@@ -913,6 +991,15 @@ def merge_format_rules(base_rules, override_rules):
         for field, value in override_page.items():
             merged["page"][field] = value
             overridden_fields.append(f"page.{field}")
+
+    override_latin_digit_format = override_rules.get("latin_digit_format")
+    if isinstance(override_latin_digit_format, dict):
+        merged.setdefault("latin_digit_format", {})
+        for field, value in override_latin_digit_format.items():
+            if field == "size_cn" or field.startswith("_"):
+                continue
+            merged["latin_digit_format"][field] = value
+            overridden_fields.append(f"latin_digit_format.{field}")
 
     override_styles = override_rules.get("styles")
     if isinstance(override_styles, dict):
@@ -1126,7 +1213,7 @@ def init_module_status() -> dict:
     """初始化所有模块状态，确保未检测到的模块也出现在报告中。"""
     status = {}
     for module_key in MODULE_STATUS_KEYS:
-        if module_key in {"header_footer", "page_number"}:
+        if module_key in {"header_footer", "page_number", "latin_digit_format"}:
             module_status = "not_requested"
         else:
             module_status = "not_detected"
@@ -1456,6 +1543,40 @@ def finalize_module_status(report, context, template) -> dict:
             "formatted",
             "已应用页边距等页面基础设置",
         )
+
+    latin_digit_config = get_latin_digit_format(template)
+    if latin_digit_config is not None:
+        latin_digit_count = counts.get("latin_digit_format", 0)
+        latin_digit_skipped_count = counts.get("latin_digit_format_skipped", 0)
+        latin_digit_font = latin_digit_config.get("font", "当前字符字体")
+        if latin_digit_count:
+            latin_note = (
+                f"检测到英文/数字格式要求，并已应用 {latin_digit_font}。"
+            )
+            if latin_digit_skipped_count:
+                latin_note += f" 另有 {latin_digit_skipped_count} 个复杂片段保守跳过。"
+            set_module_status(
+                module_status,
+                "latin_digit_format",
+                "detected",
+                latin_digit_count,
+                "formatted",
+                latin_note,
+            )
+        else:
+            latin_note = "检测到英文/数字格式要求，但未找到可安全处理的英文或数字文本。"
+            if latin_digit_skipped_count:
+                latin_note = (
+                    "检测到英文/数字格式要求，但目标位于复杂结构中，已保守跳过。"
+                )
+            set_module_status(
+                module_status,
+                "latin_digit_format",
+                "detected",
+                0,
+                "skipped",
+                latin_note,
+            )
 
     requirement_flags = get_module_requirement_flags(template)
     if requirement_flags.get("header_footer"):
@@ -1888,6 +2009,173 @@ def apply_paragraph_style(paragraph, style_config) -> None:
         apply_run_font(run, style_config)
 
 
+LATIN_DIGIT_TEXT_PATTERN = re.compile(r"[A-Za-z0-9]+(?:[._/-][A-Za-z0-9]+)*")
+LATIN_DIGIT_TARGET_PARAGRAPH_TYPES = {
+    "paper_title",
+    "abstract_title",
+    "abstract_content",
+    "keywords",
+    "abstract_en_title",
+    "abstract_en_content",
+    "keywords_en",
+    "heading_1",
+    "heading_2",
+    "heading_3",
+    "body",
+    "reference_item",
+}
+
+
+def get_latin_digit_format(template) -> dict | None:
+    """Return a usable top-level English/digit character format rule."""
+    config = template.get("latin_digit_format")
+    if not isinstance(config, dict):
+        return None
+    if not isinstance(config.get("font"), str) and not is_number(config.get("size_pt")):
+        return None
+    return config
+
+
+def get_xml_local_name(element) -> str:
+    """Return the local name for an OOXML element tag."""
+    tag = getattr(element, "tag", "") or ""
+    return tag.rsplit("}", 1)[-1]
+
+
+def paragraph_has_complex_latin_digit_structure(paragraph) -> bool:
+    """Protect fields, hyperlinks, equations, and other complex text containers."""
+    complex_local_names = {
+        "hyperlink",
+        "fldSimple",
+        "fldChar",
+        "instrText",
+        "oMath",
+        "oMathPara",
+    }
+    return any(
+        get_xml_local_name(element) in complex_local_names
+        for element in paragraph._p.iter()
+    )
+
+
+def run_is_plain_text_for_latin_digit_split(run) -> bool:
+    """Only plain text runs can be split without changing Word structures."""
+    return all(
+        get_xml_local_name(child) in {"rPr", "t"}
+        for child in run._r
+    )
+
+
+def split_latin_digit_text(text: str) -> list[tuple[str, bool]]:
+    """Split text into unchanged non-Latin pieces and Latin/digit pieces."""
+    pieces = []
+    start = 0
+    for match in LATIN_DIGIT_TEXT_PATTERN.finditer(text):
+        if match.start() > start:
+            pieces.append((text[start:match.start()], False))
+        pieces.append((match.group(0), True))
+        start = match.end()
+    if start < len(text):
+        pieces.append((text[start:], False))
+    return [piece for piece in pieces if piece[0]]
+
+
+def set_latin_digit_run_font(run, config: dict) -> None:
+    """Set ascii/hAnsi font and optional size without changing eastAsia."""
+    font_name = config.get("font")
+    if isinstance(font_name, str) and font_name.strip():
+        r_pr = run._element.get_or_add_rPr()
+        r_fonts = r_pr.rFonts
+        if r_fonts is None:
+            r_fonts = OxmlElement("w:rFonts")
+            r_pr.append(r_fonts)
+        r_fonts.set(qn("w:ascii"), font_name)
+        r_fonts.set(qn("w:hAnsi"), font_name)
+
+    if is_number(config.get("size_pt")):
+        run.font.size = Pt(config["size_pt"])
+
+
+def format_plain_text_run_latin_digits(run, paragraph, config: dict) -> int:
+    """Format Latin/digit fragments in one safe run, splitting if mixed."""
+    pieces = split_latin_digit_text(run.text)
+    latin_piece_count = sum(1 for _, is_latin_piece in pieces if is_latin_piece)
+    if latin_piece_count == 0:
+        return 0
+    if len(pieces) == 1 and pieces[0][1]:
+        set_latin_digit_run_font(run, config)
+        return 1
+
+    parent = run._r.getparent()
+    if parent is None or Run is None:
+        return 0
+
+    insert_index = parent.index(run._r)
+    for piece_text, is_latin_piece in pieces:
+        cloned_run_element = deepcopy(run._r)
+        cloned_run = Run(cloned_run_element, paragraph)
+        cloned_run.text = piece_text
+        if is_latin_piece:
+            set_latin_digit_run_font(cloned_run, config)
+        parent.insert(insert_index, cloned_run_element)
+        insert_index += 1
+    parent.remove(run._r)
+    return latin_piece_count
+
+
+def apply_latin_digit_format_to_paragraph(
+    paragraph,
+    paragraph_type: str,
+    template,
+    report,
+    context: dict,
+    paragraph_index: int,
+    text: str,
+    is_toc_context: bool,
+) -> None:
+    """Apply a conservative English/digit rule to eligible plain text runs."""
+    config = get_latin_digit_format(template)
+    if config is None or paragraph_type not in LATIN_DIGIT_TARGET_PARAGRAPH_TYPES:
+        return
+    if config.get("scope", "global") == "body" and paragraph_type != "body":
+        return
+    if is_toc_context or is_toc_title(text) or is_toc_entry(text):
+        return
+    if not LATIN_DIGIT_TEXT_PATTERN.search(text):
+        return
+
+    if paragraph_has_complex_latin_digit_structure(paragraph):
+        increment_module_count(context, "latin_digit_format_skipped")
+        add_warning(
+            report,
+            paragraph_index,
+            text,
+            "英文/数字格式处理已跳过字段、超链接或公式等复杂结构，请人工确认。",
+        )
+        return
+
+    formatted_count = 0
+    skipped_run_count = 0
+    for run in list(paragraph.runs):
+        if not LATIN_DIGIT_TEXT_PATTERN.search(run.text):
+            continue
+        if not run_is_plain_text_for_latin_digit_split(run):
+            skipped_run_count += 1
+            continue
+        formatted_count += format_plain_text_run_latin_digits(run, paragraph, config)
+
+    if formatted_count:
+        increment_module_count(context, "latin_digit_format", formatted_count)
+    if skipped_run_count:
+        increment_module_count(context, "latin_digit_format_skipped", skipped_run_count)
+        add_warning(
+            report,
+            paragraph_index,
+            text,
+            "英文/数字格式处理跳过了包含复杂 run 内容的段落片段，请人工确认。",
+        )
+
+
 def remove_child_by_tag(parent, tag_name: str) -> bool:
     """Remove a direct XML child by tag name."""
     child = parent.find(qn(tag_name))
@@ -2133,6 +2421,16 @@ def format_normal_paragraphs(doc, template, report) -> dict:
                 clear_paragraph_numbering(paragraph)
             apply_paragraph_style(paragraph, style_config)
             apply_caption_pagination_defaults(paragraph, paragraph_type)
+            apply_latin_digit_format_to_paragraph(
+                paragraph,
+                paragraph_type,
+                template,
+                report,
+                context,
+                index,
+                text,
+                was_toc_section or bool(context.get("in_toc_section")),
+            )
             add_paragraph_report(
                 report,
                 index,

@@ -2,7 +2,7 @@
 
 文格 Lite 是一个本地命令行 Python 工具，用来自动修改 `.docx` 论文格式。
 
-当前版本是 **V2.5.0**。V2.0 新增了本地 Next.js 网页上传版：用户可以在浏览器里上传 `.docx`，选择模板，点击处理，下载修改后的 Word，并查看 `report.json` 的摘要结果。V2.1 优化了模板显示、摘要统计和图题/表题识别。V2.2 新增格式规则 Schema 标准化。V2.3 新增模板继承与覆盖机制：默认模板提供完整规则，自定义 override JSON 只覆盖用户想改的字段。V2.3.1 优化了网页交互。V2.4 接入 Kimi API，把老师自然语言格式要求解析为标准 override JSON，再复用现有 Python 处理链路。V2.4.1 修正字体颜色残留和 AI 过度推断问题。V2.4.3 增加图题/表题分页保护，并在网页中明确展示当前基础模板和继承说明。V2.5.0 对应 V0.2“保守式模块触发状态报告版”，新增 `module_status` 报告，让用户知道本次检测、处理、跳过了哪些论文结构模块。
+当前版本是 **V2.6.0**。V2.0 新增了本地 Next.js 网页上传版：用户可以在浏览器里上传 `.docx`，选择模板，点击处理，下载修改后的 Word，并查看 `report.json` 的摘要结果。V2.1 优化了模板显示、摘要统计和图题/表题识别。V2.2 新增格式规则 Schema 标准化。V2.3 新增模板继承与覆盖机制：默认模板提供完整规则，自定义 override JSON 只覆盖用户想改的字段。V2.3.1 优化了网页交互。V2.4 接入 Kimi API，把老师自然语言格式要求解析为标准 override JSON，再复用现有 Python 处理链路。V2.4.1 修正字体颜色残留和 AI 过度推断问题。V2.4.3 增加图题/表题分页保护，并在网页中明确展示当前基础模板和继承说明。V2.5.0 对应 V0.2“保守式模块触发状态报告版”，新增 `module_status` 报告。V2.6.0 对应 V0.3-step1，新增保守的英文和数字字符格式规则。
 
 Python 命令行工具仍然是核心处理引擎。Next.js 负责上传、调用、展示、下载，以及在服务端调用 Kimi 把老师格式要求解析为 override JSON；AI 不读取 Word、不修改 Word、不执行命令。不做公网部署、登录系统或数据库。
 
@@ -261,6 +261,15 @@ V2.5.0 新增 `module_status`，用于说明本次文档中哪些论文结构模
 - 目录只做保守检测和保护说明，不生成、不更新目录。
 
 `report.json` 和 `final_rules_debug.debug_summary` 中都会写入 `module_status`，网页处理完成区域也会提供“本次检测到的论文结构模块”折叠说明。
+
+## V2.6.0 / V0.3-step1 英文数字字符格式增强基础版
+
+V2.6.0 新增顶层 `latin_digit_format` 规则，用于在老师明确要求时单独设置英文和数字字符的 `ascii` / `hAnsi` 字体及可选字号。
+
+- 仅在出现“英文和数字”“英文字母和阿拉伯数字”“全文英文数字”“正文中英文数字”等明确要求时触发。
+- 英文摘要的 Times New Roman 规则不会自动扩大为全文英文数字规则。
+- 混合中英文 run 只在纯文本结构中保守拆分，TOC、字段、超链接、公式等复杂结构会保护跳过。
+- 中文字体仍由段落样式的 `eastAsia` 字体控制。
 
 ## 项目结构
 
@@ -555,6 +564,7 @@ python format_docx.py samples/input.docx samples/output.docx --template template
 - `description`：模板说明，用于命令行报告。
 - `page`：页面设置。
 - `styles`：各段落类型的格式设置。
+- `latin_digit_format`：可选的英文和数字字符格式设置。
 
 `page` 支持：
 
@@ -577,6 +587,8 @@ python format_docx.py samples/input.docx samples/output.docx --template template
 - `space_after_pt`：段后间距，数字，单位磅。
 
 `styles.body` 是必需字段。如果其他段落类型样式缺失，程序会回退到 `body`，并输出 warning。
+
+`latin_digit_format` 支持 `font`、`size_pt`、`size_cn` 和 `scope`。`scope` 当前可选 `global` 或 `body`；未单独给出字号时只覆盖英文和数字字符的字体。
 
 如果同时写了 `size_cn` 和 `size_pt`，程序优先使用 `size_pt`。如果两者不一致，会生成模板 warning，并写入 `report.json` 的 `template_warnings`。
 

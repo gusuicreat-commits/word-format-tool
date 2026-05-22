@@ -3,6 +3,7 @@ export type OverrideRules = {
   description?: string;
   page?: Record<string, unknown>;
   styles?: Record<string, Record<string, unknown>>;
+  latin_digit_format?: Record<string, unknown>;
   warnings?: unknown;
 };
 
@@ -110,6 +111,15 @@ export function summarizeOverrideRules(override: unknown): {
     })
     .filter((item): item is RuleSummaryItem => Boolean(item));
 
+  if (isPlainObject(rules.latin_digit_format)) {
+    items.push({
+      type: "latin_digit_format",
+      label: "英文和数字",
+      description: describeLatinDigitFormat(rules.latin_digit_format),
+      fields: describeLatinDigitFormatFields(rules.latin_digit_format),
+    });
+  }
+
   if (isPlainObject(rules.page)) {
     const pageParts = [
       formatNumberField(rules.page.top_margin_cm, "上边距", "cm"),
@@ -174,6 +184,21 @@ export function collectOverrideFields(override: unknown): string[] {
     }
   }
 
+  if (isPlainObject(rules.latin_digit_format)) {
+    for (const field of Object.keys(rules.latin_digit_format)) {
+      if (field.startsWith("_")) {
+        continue;
+      }
+      if (field === "size_cn") {
+        if (!Object.prototype.hasOwnProperty.call(rules.latin_digit_format, "size_pt")) {
+          fields.push("latin_digit_format.size_pt");
+        }
+        continue;
+      }
+      fields.push(`latin_digit_format.${field}`);
+    }
+  }
+
   return Array.from(new Set(fields));
 }
 
@@ -193,8 +218,43 @@ export function getFinalRulesPreview(finalRules: unknown) {
   if (isPlainObject(finalRules.page)) {
     preview.page = finalRules.page;
   }
+  if (isPlainObject(finalRules.latin_digit_format)) {
+    preview.latin_digit_format = finalRules.latin_digit_format;
+  }
 
   return preview;
+}
+
+function describeLatinDigitFormat(format: Record<string, unknown>) {
+  const parts = [
+    typeof format.font === "string" ? format.font : "",
+    typeof format.size_cn === "string"
+      ? format.size_cn
+      : typeof format.size_pt === "number"
+        ? `${format.size_pt} 磅`
+        : "",
+    format.scope === "body" ? "仅正文" : "全文普通内容",
+  ].filter(Boolean);
+  return parts.length > 0 ? parts.join("，") : "已识别英文/数字字符格式";
+}
+
+function describeLatinDigitFormatFields(format: Record<string, unknown>) {
+  return Object.entries(format)
+    .filter(([key]) => !key.startsWith("_"))
+    .map(([key, value]) => {
+      if (key === "size_pt" && typeof format.size_cn === "string") {
+        return null;
+      }
+      return {
+        key,
+        label:
+          key === "scope"
+            ? "作用范围"
+            : FIELD_LABELS[key] || key,
+        value: key === "scope" && value === "body" ? "正文" : formatFieldValue(key, value),
+      };
+    })
+    .filter((item): item is RuleFieldItem => item !== null && item.value !== "");
 }
 
 function describeStyle(style: Record<string, unknown>) {

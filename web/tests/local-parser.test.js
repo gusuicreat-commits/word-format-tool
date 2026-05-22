@@ -166,6 +166,82 @@ assert.ok(!englishAbstractResult.styles.abstract_content);
 assert.ok(!englishAbstractResult.styles.keywords);
 assert.equal(englishAbstractResult.styles.abstract_en_content.font, "Times New Roman");
 assert.equal(englishAbstractResult.styles.keywords_en.font, "Times New Roman");
+assert.ok(!englishAbstractResult.latin_digit_format);
+
+const latinDigitBodyResult = tryParseRequirementsLocally(
+  "正文中文使用宋体小四，正文中的英文和数字使用 Times New Roman 小四号。",
+);
+assert.ok(latinDigitBodyResult, "Expected local parser to parse Latin digit body rule");
+assert.equal(latinDigitBodyResult.styles.body.font, "宋体");
+assert.equal(latinDigitBodyResult.styles.body.size_cn, "小四");
+assert.equal(latinDigitBodyResult.latin_digit_format.font, "Times New Roman");
+assert.equal(latinDigitBodyResult.latin_digit_format.size_cn, "小四");
+assert.equal(latinDigitBodyResult.latin_digit_format.scope, "body");
+assert.ok(
+  !latinDigitBodyResult.warnings.some((warning) =>
+    warning.includes("正文 font 存在冲突：宋体 vs Times New Roman"),
+  ),
+);
+
+const latinDigitGenericChineseResult = tryParseRequirementsLocally(
+  "中文宋体，英文和阿拉伯数字 Times New Roman。",
+);
+assert.ok(latinDigitGenericChineseResult, "Expected generic Chinese/Latin digit split rule");
+assert.equal(latinDigitGenericChineseResult.styles.body.font, "宋体");
+assert.equal(latinDigitGenericChineseResult.latin_digit_format.font, "Times New Roman");
+assert.ok(!latinDigitGenericChineseResult.styles.body.font.includes("Times New Roman"));
+
+const latinDigitCompactBodyResult = tryParseRequirementsLocally(
+  "正文中文宋体，英文数字 Times New Roman。",
+);
+assert.ok(latinDigitCompactBodyResult, "Expected compact Latin digit body rule");
+assert.equal(latinDigitCompactBodyResult.styles.body.font, "宋体");
+assert.equal(latinDigitCompactBodyResult.latin_digit_format.font, "Times New Roman");
+assert.ok(
+  !latinDigitCompactBodyResult.warnings.some((warning) =>
+    warning.includes("正文 font 存在冲突"),
+  ),
+);
+
+const latinDigitFullTextResult = tryParseRequirementsLocally(
+  "全文英文、数字均采用 Times New Roman。",
+);
+assert.ok(latinDigitFullTextResult, "Expected local parser to parse Latin digit full text rule");
+assert.equal(latinDigitFullTextResult.latin_digit_format.font, "Times New Roman");
+assert.equal(latinDigitFullTextResult.latin_digit_format.scope, "global");
+
+const exactEnglishAbstractResult = tryParseRequirementsLocally(
+  "英文摘要 Abstract 使用 Times New Roman 小四。",
+);
+assert.ok(exactEnglishAbstractResult, "Expected exact English abstract rule");
+assert.equal(exactEnglishAbstractResult.styles.abstract_en_title.font, "Times New Roman");
+assert.equal(exactEnglishAbstractResult.styles.abstract_en_content.font, "Times New Roman");
+assert.ok(!exactEnglishAbstractResult.latin_digit_format);
+assert.ok(!exactEnglishAbstractResult.styles.body);
+
+const fullLatinDigitAcceptanceResult = tryParseRequirementsLocally(`论文标题黑体三号，加粗，居中。
+一级标题黑体小三，加粗，左对齐。
+二级标题黑体四号，加粗，左对齐。
+三级标题黑体小四，加粗，左对齐。
+正文中文使用宋体小四，1.5倍行距，首行缩进2字符，两端对齐。
+正文中的英文和数字使用 Times New Roman 小四号。
+中文摘要和关键词使用宋体小四。
+参考文献标题黑体四号居中。
+参考文献条目宋体五号，单倍行距，左对齐。
+目录保持原有结构，不自动生成目录，不自动更新目录。
+全文颜色统一黑色，清除正文中多余的下划线。`);
+assert.ok(fullLatinDigitAcceptanceResult, "Expected full Latin digit acceptance rule");
+assert.equal(fullLatinDigitAcceptanceResult.styles.body.font, "宋体");
+assert.equal(fullLatinDigitAcceptanceResult.styles.body.underline, false);
+assert.equal(fullLatinDigitAcceptanceResult.latin_digit_format.font, "Times New Roman");
+assert.equal(fullLatinDigitAcceptanceResult.styles.abstract_content.font, "宋体");
+assert.equal(fullLatinDigitAcceptanceResult.styles.keywords.font, "宋体");
+assert.ok(!fullLatinDigitAcceptanceResult.styles.abstract_en_content);
+assert.ok(
+  !fullLatinDigitAcceptanceResult.warnings.some((warning) =>
+    warning.includes("正文 font 存在冲突：宋体 vs Times New Roman"),
+  ),
+);
 
 const normalText = "正文宋体小四，1.5倍行距，首行缩进2字符；一级标题黑体小三。";
 assert.equal(

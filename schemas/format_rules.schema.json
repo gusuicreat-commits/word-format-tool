@@ -48,6 +48,9 @@
         "table_text": { "$ref": "#/$defs/style" }
       },
       "additionalProperties": false
+    },
+    "latin_digit_format": {
+      "$ref": "#/$defs/latin_digit_format"
     }
   },
   "additionalProperties": false,
@@ -76,6 +79,20 @@
         "space_after_pt": { "type": "number" },
         "keep_with_next": { "type": "boolean" },
         "keep_together": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    },
+    "latin_digit_format": {
+      "type": "object",
+      "description": "英文和数字字符格式规则。",
+      "properties": {
+        "font": { "type": "string" },
+        "size_pt": { "type": "number" },
+        "size_cn": { "type": "string" },
+        "scope": {
+          "type": "string",
+          "enum": ["global", "body"]
+        }
       },
       "additionalProperties": false
     }
