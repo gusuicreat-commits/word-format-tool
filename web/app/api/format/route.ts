@@ -42,6 +42,15 @@ type ReportFile = {
     description?: string;
   };
   stats?: Record<string, number>;
+  module_status?: Record<
+    string,
+    {
+      status?: string;
+      count?: number;
+      action?: string;
+      note?: string;
+    }
+  >;
   warnings?: Array<{
     paragraph_index: number | null;
     text_preview: string;
@@ -186,6 +195,7 @@ export async function POST(request: Request) {
           description: report.template?.description || "",
         },
         stats: report.stats || {},
+        moduleStatus: report.module_status || {},
         warnings: report.warnings || [],
         baseTemplate: report.base_template || null,
         override: report.override || { enabled: false },

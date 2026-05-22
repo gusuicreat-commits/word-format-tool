@@ -25,5 +25,8 @@ assert.match(pageSource, /检测到格式要求冲突/);
 assert.match(pageSource, /请人工确认/);
 assert.match(pageSource, /已暂按后者覆盖/);
 assert.match(pageSource, /存在格式冲突/);
+assert.match(pageSource, /本次检测到的论文结构模块/);
+assert.match(pageSource, /系统只处理高置信度识别到的结构/);
+assert.match(pageSource, /未检测到或未明确要求的模块不会强行修改/);
 
 console.log("ui copy tests passed");

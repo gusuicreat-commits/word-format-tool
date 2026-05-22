@@ -13,8 +13,8 @@ export function buildRequirementsPrompt(requirementsText: string) {
     "只输出一个 JSON 对象。",
     "顶层字段只能使用 name、description、page、styles、warnings。",
     "page 字段只能使用 top_margin_cm、bottom_margin_cm、left_margin_cm、right_margin_cm，单位为 cm 的数字。例如左页边距 3cm 输出 page.left_margin_cm=3。",
-    "styles 类型只能使用 paper_title、abstract_title、abstract_content、keywords、heading_1、heading_2、heading_3、body、table_caption、figure_caption、reference_title、reference_item、table_text。",
-    "样式字段只能使用 font、size_pt、size_cn、bold、italic、alignment、line_spacing、first_line_indent_pt、space_before_pt、space_after_pt。",
+    "styles 类型只能使用 paper_title、abstract_title、abstract_content、keywords、abstract_en_title、abstract_en_content、keywords_en、heading_1、heading_2、heading_3、body、table_caption、figure_caption、reference_title、reference_item、table_text。",
+    "样式字段只能使用 font、size_pt、size_cn、bold、italic、underline、alignment、line_spacing、first_line_indent_pt、space_before_pt、space_after_pt。",
     "alignment 只能是 left、center、right、justify；居中=center，两端对齐=justify。",
     "中文字号可用：初号、小初、一号、小一、二号、小二、三号、小三、四号、小四、五号、小五、六号、小六、七号、八号。",
     "严格忠于原文。老师明确写了什么，就只输出什么。",
@@ -23,6 +23,7 @@ export function buildRequirementsPrompt(requirementsText: string) {
     "参考文献标题只能作用于 reference_title；参考文献条目、文献列表或未说明“标题”的参考文献要求作用于 reference_item。",
     "reference_title 的居中、加粗等设置不能复制到 reference_item，除非原文明确写参考文献条目也居中或加粗。",
     "正文要求只作用于 body；除非原文明确写“全文统一”“摘要和正文一致”，不要扩展到摘要、关键词或参考文献。",
+    "中文摘要/关键词只作用于 abstract_content 和 keywords；英文摘要/Abstract 只作用于 abstract_en_content；英文关键词/Keywords 只作用于 keywords_en。",
     "遇到“按学校要求”“排版规范”“标题清晰”等模糊要求，不要写入 styles，可以写入 warnings。",
     "正例：输入“一级标题黑体小三。”，只输出 heading_1.font=黑体 和 heading_1.size_cn=小三；不要输出居中、加粗或行距。",
     "正例：输入“图题和表题宋体五号居中，参考文献宋体五号。”，居中只作用于 figure_caption 和 table_caption，不能作用于 reference_item。",
@@ -498,6 +499,8 @@ function fillMissingMargins(page: Record<string, number>, value: number) {
 
 function detectStyleTargets(clause: string) {
   const targets: string[] = [];
+  const hasEnglishAbstract = /英文摘要|Abstract/i.test(clause);
+  const hasEnglishKeywords = /英文关键词|英文关键字|Keywords|Key\s*words/i.test(clause);
 
   if (/论文标题|文章标题|题目/.test(clause)) {
     targets.push("paper_title");
@@ -514,10 +517,15 @@ function detectStyleTargets(clause: string) {
   if (/三级标题|三[级級]标题/.test(clause)) {
     targets.push("heading_3");
   }
-  if (/摘要/.test(clause)) {
+  if (hasEnglishAbstract) {
+    targets.push("abstract_en_title");
+    targets.push("abstract_en_content");
+  } else if (/摘要/.test(clause)) {
     targets.push("abstract_content");
   }
-  if (/关键词/.test(clause)) {
+  if (hasEnglishKeywords) {
+    targets.push("keywords_en");
+  } else if (/关键词/.test(clause)) {
     targets.push("keywords");
   }
   if (/图题/.test(clause)) {
@@ -567,11 +575,14 @@ function parseStyleConfig(clause: string): Record<string, unknown> {
   if (/不加粗|取消加粗/.test(clause)) {
     config.bold = false;
   }
-  if (/下划线/.test(clause)) {
-    config.underline = true;
-  }
-  if (/(取消|清除|去掉|删除|不加|不要|无)\s*下划线|下划线\s*(取消|清除|去掉|删除)/.test(clause)) {
+  if (
+    /(取消|清除|去除|去掉|删除|移除|不加|不要|无).{0,16}下划线|下划线.{0,16}(取消|清除|去除|去掉|删除|移除)/.test(
+      clause,
+    )
+  ) {
     config.underline = false;
+  } else if (/(添加|增加|加上|使用|设置|采用).{0,8}下划线|加下划线/.test(clause)) {
+    config.underline = true;
   }
 
   return config;
@@ -592,6 +603,9 @@ const CONFLICT_STYLE_LABELS: Record<string, string> = {
   abstract_title: "摘要标题",
   abstract_content: "摘要正文",
   keywords: "关键词",
+  abstract_en_title: "英文摘要标题",
+  abstract_en_content: "英文摘要正文",
+  keywords_en: "英文关键词",
   heading_1: "一级标题",
   heading_2: "二级标题",
   heading_3: "三级标题",

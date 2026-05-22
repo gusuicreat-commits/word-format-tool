@@ -35,7 +35,42 @@ def add_direct_numbering(paragraph):
     p_pr.append(num_pr)
 
 
+def has_direct_numbering(paragraph):
+    p_pr = paragraph._p.pPr
+    return p_pr is not None and p_pr.find(format_docx.qn("w:numPr")) is not None
+
+
 class CoreTests(unittest.TestCase):
+    def format_paragraphs_for_report(self, paragraphs, override=None, add_table=False):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            input_path = temp_path / "input.docx"
+            output_path = temp_path / "output.docx"
+            override_path = temp_path / "override.json"
+
+            doc = Document()
+            for text in paragraphs:
+                doc.add_paragraph(text)
+            if add_table:
+                table = doc.add_table(rows=1, cols=1)
+                table.cell(0, 0).text = "表格文字"
+            doc.save(str(input_path))
+
+            if override is not None:
+                override_path.write_text(
+                    json.dumps(override, ensure_ascii=False),
+                    encoding="utf-8",
+                )
+
+            rules = format_docx.get_final_format_rules(
+                "default",
+                str(override_path) if override is not None else None,
+                print_warnings=False,
+            )
+            report = format_docx.init_report(input_path, output_path, rules)
+            format_docx.format_document(input_path, output_path, rules, report, overwrite=True)
+            return report
+
     def test_detect_chinese_heading_1(self):
         result = format_docx.detect_paragraph_type("一、研究背景", 0, make_context())
         self.assertEqual(result, "heading_1")
@@ -46,6 +81,17 @@ class CoreTests(unittest.TestCase):
 
     def test_detect_number_heading_2(self):
         result = format_docx.detect_paragraph_type("1.1 研究现状", 0, make_context())
+        self.assertEqual(result, "heading_2")
+
+    def test_detect_heading_from_word_heading_style_without_number_text(self):
+        doc = Document()
+        paragraph = doc.add_paragraph("研究背景", style="Heading 2")
+        result = format_docx.detect_paragraph_type(
+            paragraph.text.strip(),
+            0,
+            make_context(),
+            paragraph,
+        )
         self.assertEqual(result, "heading_2")
 
     def test_detect_table_caption(self):
@@ -114,6 +160,164 @@ class CoreTests(unittest.TestCase):
                 "reference_item",
             )
             self.assertFalse(context["in_reference_section"])
+
+    def test_module_status_for_simple_paper(self):
+        report = self.format_paragraphs_for_report(
+            [
+                "测试论文标题",
+                "摘要：本文用于测试模块状态。",
+                "关键词：模块状态；参考文献",
+                "一、研究背景",
+                "这是一段普通正文。",
+                "参考文献",
+                "[1] 张三. 测试文献. 2024.",
+            ]
+        )
+        module_status = report["module_status"]
+
+        self.assertEqual(module_status["paper_title"]["status"], "detected")
+        self.assertEqual(module_status["abstract_cn"]["status"], "detected")
+        self.assertEqual(module_status["keywords_cn"]["status"], "detected")
+        self.assertEqual(module_status["body"]["status"], "detected")
+        self.assertEqual(module_status["reference"]["status"], "detected")
+        self.assertEqual(module_status["abstract_en"]["status"], "not_detected")
+        self.assertEqual(module_status["keywords_en"]["status"], "not_detected")
+        self.assertEqual(module_status["toc"]["status"], "not_detected")
+        self.assertIn(
+            "module_status",
+            report["final_rules_debug"]["debug_summary"],
+        )
+
+    def test_module_status_detects_english_abstract_and_keywords(self):
+        report = self.format_paragraphs_for_report(
+            [
+                "测试论文标题",
+                "Abstract",
+                "This paragraph is an English abstract.",
+                "Keywords: AI; learning",
+            ]
+        )
+        module_status = report["module_status"]
+
+        self.assertEqual(module_status["abstract_en"]["status"], "detected")
+        self.assertEqual(module_status["abstract_en"]["count"], 1)
+        self.assertEqual(module_status["keywords_en"]["status"], "detected")
+        self.assertEqual(module_status["keywords_en"]["count"], 1)
+
+    def test_module_status_detects_and_protects_toc_entries(self):
+        report = self.format_paragraphs_for_report(
+            [
+                "测试论文标题",
+                "目录",
+                "一、研究背景 ........ 1",
+                "1.1 研究说明   2",
+                "一、研究背景",
+                "这是一段正文。",
+            ]
+        )
+        module_status = report["module_status"]
+        detected_types = [item["detected_type"] for item in report["paragraphs"]]
+
+        self.assertEqual(module_status["toc"]["status"], "detected")
+        self.assertEqual(module_status["toc"]["action"], "protected")
+        self.assertEqual(detected_types[1], "body")
+        self.assertEqual(detected_types[2], "body")
+        self.assertEqual(detected_types[3], "body")
+        self.assertEqual(detected_types[4], "heading_1")
+
+    def test_module_status_for_realistic_paper_structure(self):
+        report = self.format_paragraphs_for_report(
+            [
+                "财务透明度对企业融资成本的影响——以中小企业为例",
+                "摘要：本文研究财务透明度与企业融资成本的关系。",
+                "关键词：财务透明度；融资成本；中小企业",
+                "Abstract",
+                "This paper studies financial transparency and financing cost.",
+                "Keywords",
+                "financial transparency; financing cost",
+                "目录",
+                "一、绪论 2",
+                "1.1 研究背景 3",
+                "1.1.1 财务透明度的概念与发展 4",
+                "一、绪论",
+                "1.1 研究背景",
+                "1.1.1 三级标题",
+                "这是正文内容，用于验证正文模块仍然被检测。",
+                "参考文献",
+                "[1] 张三. 财务透明度研究. 2024.",
+            ]
+        )
+        module_status = report["module_status"]
+
+        self.assertEqual(module_status["abstract_cn"]["status"], "detected")
+        self.assertEqual(module_status["keywords_cn"]["status"], "detected")
+        self.assertEqual(module_status["abstract_en"]["status"], "detected")
+        self.assertEqual(module_status["keywords_en"]["status"], "detected")
+        self.assertEqual(module_status["toc"]["status"], "detected")
+        self.assertEqual(module_status["toc"]["action"], "protected")
+        self.assertEqual(module_status["heading"]["status"], "detected")
+        self.assertGreater(module_status["heading"]["count"], 0)
+        self.assertEqual(module_status["body"]["status"], "detected")
+        self.assertEqual(module_status["reference"]["status"], "detected")
+
+    def test_module_status_heading_uses_word_heading_styles(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            input_path = temp_path / "input.docx"
+            output_path = temp_path / "output.docx"
+
+            doc = Document()
+            doc.add_paragraph("论文标题")
+            doc.add_paragraph("研究背景", style="Heading 2")
+            doc.add_paragraph("正文内容")
+            doc.save(str(input_path))
+
+            rules = format_docx.get_final_format_rules("default", None, print_warnings=False)
+            report = format_docx.init_report(input_path, output_path, rules)
+            format_docx.format_document(input_path, output_path, rules, report, overwrite=True)
+
+        module_status = report["module_status"]
+        self.assertEqual(module_status["heading"]["status"], "detected")
+        self.assertGreater(module_status["heading"]["count"], 0)
+
+    def test_module_status_records_unsupported_header_footer_and_page_number(self):
+        report = self.format_paragraphs_for_report(
+            ["测试论文标题", "这是一段正文。"],
+            override={
+                "name": "module_requirements",
+                "module_requirements": {
+                    "header_footer": True,
+                    "page_number": True,
+                },
+                "styles": {"body": {"font": "宋体"}},
+            },
+        )
+        module_status = report["module_status"]
+        warning_messages = [item["message"] for item in report["warnings"]]
+
+        self.assertEqual(
+            module_status["header_footer"]["status"],
+            "detected_but_not_supported",
+        )
+        self.assertEqual(module_status["header_footer"]["action"], "warning_only")
+        self.assertEqual(
+            module_status["page_number"]["status"],
+            "detected_but_not_supported",
+        )
+        self.assertEqual(module_status["page_number"]["action"], "warning_only")
+        self.assertTrue(any("页眉页脚" in message for message in warning_messages))
+        self.assertTrue(any("页码" in message for message in warning_messages))
+
+    def test_module_status_for_plain_paper_keeps_missing_modules_explicit(self):
+        report = self.format_paragraphs_for_report(["测试论文标题", "这是一段正文。"])
+        module_status = report["module_status"]
+
+        for module_key in format_docx.MODULE_STATUS_KEYS:
+            self.assertIn(module_key, module_status)
+        self.assertEqual(module_status["header_footer"]["status"], "not_requested")
+        self.assertEqual(module_status["page_number"]["status"], "not_requested")
+        self.assertEqual(module_status["abstract_en"]["status"], "not_detected")
+        self.assertEqual(module_status["toc"]["status"], "not_detected")
 
     def test_normalize_font_size_xiaosi(self):
         self.assertEqual(format_docx.normalize_font_size("小四"), 12)
@@ -233,7 +437,7 @@ class CoreTests(unittest.TestCase):
         )
         self.assertEqual(str(run.font.color.rgb), "000000")
 
-    def test_format_normal_paragraphs_clears_body_underline(self):
+    def test_format_normal_paragraphs_preserves_body_underline_without_explicit_rule(self):
         doc = Document()
         doc.add_paragraph("\u8bba\u6587\u6807\u9898")
         paragraph = doc.add_paragraph("\u8fd9\u662f\u6b63\u6587\u5185\u5bb9")
@@ -249,9 +453,27 @@ class CoreTests(unittest.TestCase):
 
         format_docx.format_normal_paragraphs(doc, template, report)
 
+        self.assertTrue(paragraph.runs[0].font.underline)
+
+    def test_format_normal_paragraphs_clears_body_underline_when_explicit_false(self):
+        doc = Document()
+        doc.add_paragraph("\u8bba\u6587\u6807\u9898")
+        paragraph = doc.add_paragraph("\u8fd9\u662f\u6b63\u6587\u5185\u5bb9")
+        paragraph.runs[0].font.underline = True
+        template = {
+            "styles": {
+                "paper_title": {"font": "\u5b8b\u4f53", "size_pt": 12},
+                "body": {"font": "\u5b8b\u4f53", "size_pt": 12, "underline": False},
+            },
+            "_runtime": {"fallback_count": 0, "warned_missing_styles": set()},
+        }
+        report = {"paragraphs": [], "warnings": []}
+
+        format_docx.format_normal_paragraphs(doc, template, report)
+
         self.assertFalse(paragraph.runs[0].font.underline)
 
-    def test_format_normal_paragraphs_clears_paper_title_underline(self):
+    def test_format_normal_paragraphs_preserves_title_underline_without_explicit_rule(self):
         doc = Document()
         paragraph = doc.add_paragraph("\u8bba\u6587\u6807\u9898")
         paragraph.runs[0].font.underline = True
@@ -266,7 +488,7 @@ class CoreTests(unittest.TestCase):
 
         format_docx.format_normal_paragraphs(doc, template, report)
 
-        self.assertFalse(paragraph.runs[0].font.underline)
+        self.assertTrue(paragraph.runs[0].font.underline)
 
     def test_format_tables_clears_table_text_underline(self):
         doc = Document()
@@ -277,7 +499,7 @@ class CoreTests(unittest.TestCase):
         template = {
             "styles": {
                 "body": {"font": "\u5b8b\u4f53", "size_pt": 12},
-                "table_text": {"font": "\u5b8b\u4f53", "size_pt": 10.5},
+                "table_text": {"font": "\u5b8b\u4f53", "size_pt": 10.5, "underline": False},
             },
             "_runtime": {"fallback_count": 0, "warned_missing_styles": set()},
         }
@@ -296,7 +518,7 @@ class CoreTests(unittest.TestCase):
             "styles": {
                 "body": {"font": "\u5b8b\u4f53", "size_pt": 12},
                 "reference_title": {"font": "\u9ed1\u4f53", "size_pt": 14},
-                "reference_item": {"font": "\u5b8b\u4f53", "size_pt": 10.5},
+                "reference_item": {"font": "\u5b8b\u4f53", "size_pt": 10.5, "underline": False},
             },
             "_runtime": {"fallback_count": 0, "warned_missing_styles": set()},
         }
@@ -332,6 +554,124 @@ class CoreTests(unittest.TestCase):
         self.assertTrue(paragraph.runs[0].font.underline)
         self.assertTrue(paragraph.runs[0].bold)
         self.assertTrue(paragraph.runs[0].italic)
+
+    def test_format_preserves_word_heading_style_and_numbering(self):
+        doc = Document()
+        doc.add_paragraph("论文标题")
+        heading_1 = doc.add_paragraph("绪论", style="Heading 1")
+        heading_2 = doc.add_paragraph("研究背景", style="Heading 2")
+        heading_3 = doc.add_paragraph("理论意义", style="Heading 3")
+        for paragraph in (heading_1, heading_2, heading_3):
+            add_direct_numbering(paragraph)
+
+        template = {
+            "styles": {
+                "paper_title": {"font": "宋体", "size_pt": 12},
+                "body": {"font": "宋体", "size_pt": 12},
+                "heading_1": {"font": "黑体", "size_pt": 15},
+                "heading_2": {"font": "黑体", "size_pt": 14},
+                "heading_3": {"font": "黑体", "size_pt": 12},
+            },
+            "_runtime": {"fallback_count": 0, "warned_missing_styles": set()},
+        }
+        report = {"paragraphs": [], "warnings": []}
+
+        format_docx.format_normal_paragraphs(doc, template, report)
+
+        self.assertEqual(heading_1.style.name, "Heading 1")
+        self.assertEqual(heading_2.style.name, "Heading 2")
+        self.assertEqual(heading_3.style.name, "Heading 3")
+        self.assertTrue(has_direct_numbering(heading_1))
+        self.assertTrue(has_direct_numbering(heading_2))
+        self.assertTrue(has_direct_numbering(heading_3))
+
+    def test_format_document_preserves_paragraph_text_order(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            input_path = temp_path / "input.docx"
+            output_path = temp_path / "output.docx"
+
+            original_texts = [
+                "论文标题",
+                "摘要",
+                "这是一段中文摘要。",
+                "关键词：格式；测试",
+                "绪论",
+                "研究背景",
+                "正文内容不应被修改。",
+                "参考文献",
+                "[1] 张三. 测试文献. 2024.",
+            ]
+            doc = Document()
+            doc.add_paragraph(original_texts[0])
+            doc.add_paragraph(original_texts[1], style="Heading 1")
+            doc.add_paragraph(original_texts[2])
+            doc.add_paragraph(original_texts[3])
+            doc.add_paragraph(original_texts[4], style="Heading 1")
+            doc.add_paragraph(original_texts[5], style="Heading 2")
+            doc.add_paragraph(original_texts[6])
+            doc.add_paragraph(original_texts[7])
+            doc.add_paragraph(original_texts[8])
+            doc.save(str(input_path))
+
+            rules = format_docx.get_final_format_rules("default", None, print_warnings=False)
+            report = format_docx.init_report(input_path, output_path, rules)
+            format_docx.format_document(input_path, output_path, rules, report, overwrite=True)
+            output_doc = Document(str(output_path))
+
+        self.assertEqual([p.text for p in output_doc.paragraphs], original_texts)
+
+    def test_english_abstract_rules_do_not_override_chinese_abstract(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            input_path = temp_path / "input.docx"
+            output_path = temp_path / "output.docx"
+            override_path = temp_path / "override.json"
+
+            doc = Document()
+            doc.add_paragraph("测试论文标题")
+            doc.add_paragraph("摘要")
+            abstract_paragraph = doc.add_paragraph("这是中文摘要正文。")
+            doc.add_paragraph("关键词：中文；摘要")
+            doc.save(str(input_path))
+
+            override_path.write_text(
+                json.dumps(
+                    {
+                        "name": "english_only",
+                        "styles": {
+                            "abstract_en_content": {
+                                "font": "Times New Roman",
+                                "bold": True,
+                            },
+                            "keywords_en": {
+                                "font": "Times New Roman",
+                                "bold": True,
+                            },
+                        },
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            rules = format_docx.get_final_format_rules(
+                "default",
+                str(override_path),
+                print_warnings=False,
+            )
+            report = format_docx.init_report(input_path, output_path, rules)
+            format_docx.format_document(input_path, output_path, rules, report, overwrite=True)
+
+            output_doc = Document(str(output_path))
+
+        output_abstract = output_doc.paragraphs[2]
+        output_keywords = output_doc.paragraphs[3]
+        self.assertEqual(output_abstract.text, abstract_paragraph.text)
+        self.assertNotEqual(output_abstract.runs[0].font.name, "Times New Roman")
+        self.assertFalse(output_abstract.runs[0].bold)
+        self.assertNotEqual(output_keywords.runs[0].font.name, "Times New Roman")
+        self.assertFalse(output_keywords.runs[0].bold)
 
     def test_apply_paragraph_style_sets_pagination_controls(self):
         doc = Document()
@@ -1073,6 +1413,10 @@ class CoreTests(unittest.TestCase):
             self.assertEqual(output_doc.paragraphs[2].paragraph_format.line_spacing, 1.0)
             self.assertEqual(output_doc.paragraphs[3].paragraph_format.line_spacing, 1.0)
             self.assertNotEqual(output_doc.paragraphs[5].paragraph_format.line_spacing, 1.0)
+            module_status = report["module_status"]
+            self.assertEqual(module_status["reference"]["status"], "detected")
+            self.assertEqual(module_status["appendix"]["status"], "detected")
+            self.assertEqual(module_status["appendix"]["action"], "boundary_only")
 
 
 if __name__ == "__main__":

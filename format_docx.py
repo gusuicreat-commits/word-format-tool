@@ -1,4 +1,4 @@
-"""文格 Lite V2.4.3：本地版 Word 论文格式修改器。
+"""文格 Lite V2.5.0：本地版 Word 论文格式修改器。
 
 用法：
     python format_docx.py input.docx output.docx --overwrite
@@ -38,17 +38,23 @@ except ImportError:
 
 BASE_DIR = Path(__file__).resolve().parent
 DEFAULT_TEMPLATE_PATH = BASE_DIR / "templates" / "default.json"
-VERSION = "V2.4.3"
+VERSION = "V2.5.0"
 
 CHINESE_NUMBER = "一二三四五六七八九十"
 PROTECTED_FIRST_PARAGRAPHS = {
     "摘要",
     "摘要：",
     "摘要:",
+    "摘 要",
     "关键词",
     "关键词：",
     "关键词:",
     "目录",
+    "Abstract",
+    "ABSTRACT",
+    "Keywords",
+    "KEYWORDS",
+    "Key words",
     "参考文献",
     "参考文献：",
     "参考文献:",
@@ -69,6 +75,9 @@ SUPPORTED_STYLE_TYPES = [
     "abstract_title",
     "abstract_content",
     "keywords",
+    "abstract_en_title",
+    "abstract_en_content",
+    "keywords_en",
     "heading_1",
     "heading_2",
     "heading_3",
@@ -80,7 +89,18 @@ SUPPORTED_STYLE_TYPES = [
     "table_text",
 ]
 
-NUMBERING_CLEAR_PARAGRAPH_TYPES = set(SUPPORTED_STYLE_TYPES) - {"table_text"}
+STYLE_FALLBACKS = {
+    "abstract_en_title": "abstract_title",
+    "abstract_en_content": "abstract_content",
+    "keywords_en": "keywords",
+}
+
+NUMBERING_CLEAR_PARAGRAPH_TYPES = set(SUPPORTED_STYLE_TYPES) - {
+    "table_text",
+    "heading_1",
+    "heading_2",
+    "heading_3",
+}
 
 ALLOWED_STYLE_FIELDS = {
     "font",
@@ -142,6 +162,9 @@ REPORT_STAT_KEYS = [
     "abstract_title",
     "abstract_content",
     "keywords",
+    "abstract_en_title",
+    "abstract_en_content",
+    "keywords_en",
     "heading_1",
     "heading_2",
     "heading_3",
@@ -154,6 +177,43 @@ REPORT_STAT_KEYS = [
     "style_fallback_count",
     "warning_count",
 ]
+
+MODULE_STATUS_KEYS = [
+    "paper_title",
+    "abstract_cn",
+    "keywords_cn",
+    "abstract_en",
+    "keywords_en",
+    "toc",
+    "heading",
+    "body",
+    "table",
+    "figure_caption",
+    "table_caption",
+    "reference",
+    "appendix",
+    "page",
+    "header_footer",
+    "page_number",
+]
+
+MODULE_DEFAULT_NOTES = {
+    "paper_title": "未检测到论文标题，未处理",
+    "abstract_cn": "未检测到中文摘要，未处理",
+    "keywords_cn": "未检测到中文关键词，未处理",
+    "abstract_en": "未检测到英文摘要，未处理",
+    "keywords_en": "未检测到英文关键词，未处理",
+    "toc": "未检测到目录区域，未处理",
+    "heading": "未检测到标题层级，未处理",
+    "body": "未检测到正文段落，未处理",
+    "table": "未检测到表格，未处理",
+    "figure_caption": "未检测到图题，未处理",
+    "table_caption": "未检测到表题，未处理",
+    "reference": "未检测到参考文献，未处理",
+    "appendix": "未检测到附录，未处理",
+    "header_footer": "老师要求中未出现页眉页脚要求，未处理",
+    "page_number": "老师要求中未出现页码要求，未处理",
+}
 
 DEFAULT_STYLE = {
     "font": "宋体",
@@ -185,7 +245,7 @@ class ReportError(UserFacingError):
 def parse_args(argv=None) -> argparse.Namespace:
     """解析命令行参数。"""
     parser = argparse.ArgumentParser(
-        description="文格 Lite V2.4.3：基于规则识别段落，按 JSON 模板修改 .docx，并可生成处理报告。"
+        description="文格 Lite V2.5.0：基于规则识别段落，按 JSON 模板修改 .docx，并可生成处理报告。"
     )
     parser.add_argument("input_docx", nargs="?", help="输入 Word 文件路径，例如 samples/input.docx")
     parser.add_argument("output_docx", nargs="?", help="输出 Word 文件路径，例如 samples/output.docx")
@@ -535,6 +595,8 @@ def normalize_format_rules(template, fill_defaults=True):
 
         if fill_defaults:
             for field, default_value in DEFAULT_STYLE.items():
+                if field == "underline":
+                    continue
                 normalized_style.setdefault(field, default_value)
 
             normalized_style.setdefault("space_before_pt", DEFAULT_STYLE["space_before_pt"])
@@ -1060,6 +1122,23 @@ def count_override_fields(rules) -> int:
     return len(rules.get("_override", {}).get("overridden_fields", []))
 
 
+def init_module_status() -> dict:
+    """初始化所有模块状态，确保未检测到的模块也出现在报告中。"""
+    status = {}
+    for module_key in MODULE_STATUS_KEYS:
+        if module_key in {"header_footer", "page_number"}:
+            module_status = "not_requested"
+        else:
+            module_status = "not_detected"
+        status[module_key] = {
+            "status": module_status,
+            "count": 0,
+            "action": "skipped",
+            "note": MODULE_DEFAULT_NOTES.get(module_key, "未检测到，未处理"),
+        }
+    return status
+
+
 def init_report(input_path, output_path, template):
     """初始化格式处理报告对象。"""
     template_warnings = list(template.get("_template_warnings", []))
@@ -1090,6 +1169,7 @@ def init_report(input_path, output_path, template):
         ),
         "final_rules_debug": build_rules_debug_payload(template),
         "stats": {key: 0 for key in REPORT_STAT_KEYS},
+        "module_status": init_module_status(),
         "paragraphs": [],
         "tables": [],
         "template_warnings": template_warnings,
@@ -1154,6 +1234,280 @@ def add_warning(report, paragraph_index, text, message):
     )
 
 
+def set_module_status(
+    module_status: dict,
+    module_key: str,
+    status: str,
+    count: int,
+    action: str,
+    note: str,
+) -> None:
+    """写入单个模块状态。"""
+    if module_key not in module_status:
+        module_status[module_key] = {}
+    module_status[module_key].update(
+        {
+            "status": status,
+            "count": count,
+            "action": action,
+            "note": note,
+        }
+    )
+
+
+def increment_module_count(context: dict, module_key: str, amount: int = 1) -> None:
+    """累计模块命中次数。"""
+    counts = context.setdefault("module_counts", {})
+    counts[module_key] = counts.get(module_key, 0) + amount
+
+
+def mark_module_flag(context: dict, flag_name: str) -> None:
+    """记录模块级布尔状态，例如目录保护或附录边界判断。"""
+    context.setdefault("module_flags", {})[flag_name] = True
+
+
+def get_module_requirement_flags(template) -> dict:
+    """从解析出的 override 元数据中读取高级模块要求标记。"""
+    flags = {}
+    candidates = [
+        template.get("_normalized_override"),
+        template.get("_raw_override"),
+        template,
+    ]
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            continue
+        module_requirements = candidate.get("module_requirements") or candidate.get(
+            "_module_requirements"
+        )
+        if not isinstance(module_requirements, dict):
+            continue
+        for key in ("header_footer", "page_number"):
+            if isinstance(module_requirements.get(key), bool):
+                flags[key] = module_requirements[key]
+    return flags
+
+
+def finalize_module_status(report, context, template) -> dict:
+    """根据本次检测结果生成保守式模块触发状态报告。"""
+    module_status = init_module_status()
+    stats = context.get("stats", {})
+    counts = context.get("module_counts", {})
+    flags = context.get("module_flags", {})
+
+    paper_title_count = stats.get("paper_title", 0)
+    if paper_title_count:
+        set_module_status(
+            module_status,
+            "paper_title",
+            "detected",
+            paper_title_count,
+            "formatted",
+            "检测到论文标题并应用标题样式",
+        )
+
+    abstract_cn_count = stats.get("abstract_title", 0) + stats.get("abstract_content", 0)
+    if abstract_cn_count:
+        set_module_status(
+            module_status,
+            "abstract_cn",
+            "detected",
+            abstract_cn_count,
+            "formatted",
+            "检测到中文摘要并应用摘要样式",
+        )
+
+    keywords_cn_count = stats.get("keywords", 0)
+    if keywords_cn_count:
+        set_module_status(
+            module_status,
+            "keywords_cn",
+            "detected",
+            keywords_cn_count,
+            "formatted",
+            "检测到中文关键词并应用关键词样式",
+        )
+
+    abstract_en_count = counts.get("abstract_en", 0)
+    if abstract_en_count:
+        set_module_status(
+            module_status,
+            "abstract_en",
+            "detected",
+            abstract_en_count,
+            "warning_only",
+            "检测到英文摘要，当前版本仅记录状态，不单独格式化",
+        )
+
+    keywords_en_count = counts.get("keywords_en", 0)
+    if keywords_en_count:
+        set_module_status(
+            module_status,
+            "keywords_en",
+            "detected",
+            keywords_en_count,
+            "warning_only",
+            "检测到英文关键词，当前版本仅记录状态，不单独格式化",
+        )
+
+    toc_count = counts.get("toc", 0)
+    if toc_count:
+        set_module_status(
+            module_status,
+            "toc",
+            "detected",
+            toc_count,
+            "protected",
+            "检测到目录区域，当前版本不生成或更新目录，仅保护不强行改写",
+        )
+
+    heading_count = (
+        stats.get("heading_1", 0)
+        + stats.get("heading_2", 0)
+        + stats.get("heading_3", 0)
+    )
+    heading_count = max(heading_count, counts.get("heading", 0))
+    if heading_count:
+        set_module_status(
+            module_status,
+            "heading",
+            "detected",
+            heading_count,
+            "formatted",
+            "检测到标题层级并应用标题样式",
+        )
+
+    body_count = stats.get("body", 0)
+    if body_count:
+        set_module_status(
+            module_status,
+            "body",
+            "detected",
+            body_count,
+            "formatted",
+            "检测到正文段落并应用正文样式",
+        )
+
+    table_count = stats.get("table", 0)
+    if table_count:
+        set_module_status(
+            module_status,
+            "table",
+            "detected",
+            table_count,
+            "formatted",
+            "检测到表格并应用表格文字样式",
+        )
+
+    figure_caption_count = stats.get("figure_caption", 0)
+    if figure_caption_count:
+        set_module_status(
+            module_status,
+            "figure_caption",
+            "detected",
+            figure_caption_count,
+            "formatted",
+            "检测到图题并应用图题样式",
+        )
+
+    table_caption_count = stats.get("table_caption", 0)
+    if table_caption_count:
+        set_module_status(
+            module_status,
+            "table_caption",
+            "detected",
+            table_caption_count,
+            "formatted",
+            "检测到表题并应用表题样式",
+        )
+
+    reference_count = stats.get("reference_title", 0) + stats.get("reference_item", 0)
+    if reference_count:
+        set_module_status(
+            module_status,
+            "reference",
+            "detected",
+            reference_count,
+            "formatted",
+            "检测到参考文献标题或条目并应用参考文献样式",
+        )
+
+    appendix_count = counts.get("appendix", 0)
+    if appendix_count:
+        appendix_note = "检测到附录，并用于退出参考文献模式"
+        if not flags.get("appendix_boundary"):
+            appendix_note = "检测到附录，当前版本仅用于边界判断，不单独格式化"
+        set_module_status(
+            module_status,
+            "appendix",
+            "detected",
+            appendix_count,
+            "boundary_only",
+            appendix_note,
+        )
+
+    page_field_count = len(template.get("page", {})) if isinstance(template.get("page"), dict) else 0
+    if page_field_count:
+        set_module_status(
+            module_status,
+            "page",
+            "detected",
+            page_field_count,
+            "formatted",
+            "已应用页边距等页面基础设置",
+        )
+
+    requirement_flags = get_module_requirement_flags(template)
+    if requirement_flags.get("header_footer"):
+        set_module_status(
+            module_status,
+            "header_footer",
+            "detected_but_not_supported",
+            1,
+            "warning_only",
+            "检测到页眉页脚相关要求，但当前版本暂不处理，请人工确认",
+        )
+        add_warning(
+            report,
+            None,
+            "",
+            "检测到页眉页脚相关要求，但当前版本暂不处理，请人工确认",
+        )
+
+    if requirement_flags.get("page_number"):
+        set_module_status(
+            module_status,
+            "page_number",
+            "detected_but_not_supported",
+            1,
+            "warning_only",
+            "检测到页码相关要求，但当前版本暂不处理，请人工确认",
+        )
+        add_warning(
+            report,
+            None,
+            "",
+            "检测到页码相关要求，但当前版本暂不处理，请人工确认",
+        )
+
+    report["module_status"] = module_status
+    debug_summary = report.setdefault("final_rules_debug", {}).setdefault(
+        "debug_summary", {}
+    )
+    debug_summary["module_status"] = module_status
+    debug_summary["module_status_summary"] = {
+        "detected_count": sum(
+            1
+            for item in module_status.values()
+            if item.get("status") in {"detected", "detected_but_not_supported"}
+        ),
+        "warning_only_count": sum(
+            1 for item in module_status.values() if item.get("action") == "warning_only"
+        ),
+    }
+    return module_status
+
+
 def save_report(report, report_path):
     """保存 JSON 报告文件。"""
     path = Path(report_path)
@@ -1171,7 +1525,58 @@ def save_report(report, report_path):
 
 def is_explicit_keywords(text: str) -> bool:
     """判断是否是关键词段落。"""
-    return text.startswith("关键词：") or text.startswith("关键词:")
+    normalized = text.strip()
+    return (
+        normalized == "关键词"
+        or normalized.startswith("关键词：")
+        or normalized.startswith("关键词:")
+    )
+
+
+def is_chinese_abstract_title(text: str) -> bool:
+    """判断是否是中文摘要标题。"""
+    normalized = text.strip()
+    return normalized in {"摘要", "摘 要", "摘要：", "摘要:"}
+
+
+def is_english_abstract(text: str) -> bool:
+    """保守识别英文摘要标题或摘要起始段。"""
+    normalized = re.sub(r"\s+", " ", text.strip())
+    return re.match(r"^abstract\s*[:：]?(?:\s|$)", normalized, re.IGNORECASE) is not None
+
+
+def is_english_keywords(text: str) -> bool:
+    """保守识别英文关键词标题或关键词起始段。"""
+    normalized = re.sub(r"\s+", " ", text.strip())
+    return re.match(
+        r"^(keywords|key\s+words)\s*[:：]?(?:\s|$)",
+        normalized,
+        re.IGNORECASE,
+    ) is not None
+
+
+def is_toc_title(text: str) -> bool:
+    """保守识别目录标题。"""
+    compact = re.sub(r"\s+", "", text.strip())
+    return compact == "目录"
+
+
+def is_toc_entry(text: str) -> bool:
+    """保守识别目录条目，不生成或更新目录。"""
+    normalized = re.sub(r"\s+", " ", text.strip())
+    if not normalized:
+        return False
+    if re.search(r"\.{2,}\s*\d+$", normalized):
+        return True
+    if re.search(r"…+\s*\d+$", normalized):
+        return True
+    if re.search(r"\s{2,}\d+$", normalized):
+        return True
+    if re.match(rf"^[{CHINESE_NUMBER}]+[\u3001.\uFF0E]\s*\S.+\s+\d{{1,4}}$", normalized):
+        return True
+    if re.match(r"^\d+(?:\.\d+)+\s+\S.+\s+\d{1,4}$", normalized):
+        return True
+    return False
 
 
 def is_reference_title(text: str) -> bool:
@@ -1223,14 +1628,26 @@ def detect_caption_type(text: str) -> str | None:
     return None
 
 
-def detect_paragraph_type(text, index, context):
+def detect_paragraph_type(text, index, context, paragraph=None):
     """用正则和上下文识别段落类型，不使用 AI 判断。"""
     if not text:
         return "empty"
 
+    if is_toc_title(text):
+        context["in_toc_section"] = True
+        context["in_abstract_section"] = False
+        context["in_english_abstract_section"] = False
+        return "body"
+
+    if context.get("in_toc_section"):
+        if is_toc_entry(text):
+            return "body"
+        context["in_toc_section"] = False
+
     if is_reference_title(text):
         context["in_reference_section"] = True
         context["in_abstract_section"] = False
+        context["in_english_abstract_section"] = False
         return "reference_title"
 
     if context.get("in_reference_section"):
@@ -1239,12 +1656,19 @@ def detect_paragraph_type(text, index, context):
         else:
             return "reference_item"
 
-    if text == "摘要":
-        context["in_abstract_section"] = True
-        return "abstract_title"
+    if is_english_abstract(text):
+        context["in_english_abstract_section"] = True
+        context["in_abstract_section"] = False
+        return "abstract_en_title"
 
-    if text in {"摘要：", "摘要:"}:
+    if is_english_keywords(text):
+        context["in_english_abstract_section"] = False
+        context["in_abstract_section"] = False
+        return "keywords_en"
+
+    if is_chinese_abstract_title(text):
         context["in_abstract_section"] = True
+        context["in_english_abstract_section"] = False
         return "abstract_title"
 
     if text.startswith("摘要：") or text.startswith("摘要:"):
@@ -1253,6 +1677,7 @@ def detect_paragraph_type(text, index, context):
 
     if is_explicit_keywords(text):
         context["in_abstract_section"] = False
+        context["in_english_abstract_section"] = False
         return "keywords"
 
     if context.get("in_abstract_section"):
@@ -1265,6 +1690,13 @@ def detect_paragraph_type(text, index, context):
         else:
             return "abstract_content"
 
+    if context.get("in_english_abstract_section"):
+        heading_style_type = detect_heading_type_from_style(paragraph)
+        if heading_style_type or detect_number_heading_type(text):
+            context["in_english_abstract_section"] = False
+        else:
+            return "abstract_en_content"
+
     caption_type = detect_caption_type(text)
     if caption_type:
         return caption_type
@@ -1275,6 +1707,10 @@ def detect_paragraph_type(text, index, context):
 
     if not is_title_candidate(text):
         return "body"
+
+    heading_style_type = detect_heading_type_from_style(paragraph)
+    if heading_style_type:
+        return heading_style_type
 
     if re.match(rf"^[{CHINESE_NUMBER}]+[、.．]\s*\S+", text):
         return "heading_1"
@@ -1316,6 +1752,9 @@ def get_style_config(
     styles = template["styles"]
     if paragraph_type in styles:
         return styles[paragraph_type], paragraph_type, None
+    fallback_type = STYLE_FALLBACKS.get(paragraph_type)
+    if fallback_type in styles:
+        return styles[fallback_type], fallback_type, None
 
     runtime = template.setdefault("_runtime", {})
     runtime["fallback_count"] = runtime.get("fallback_count", 0) + 1
@@ -1343,6 +1782,56 @@ def get_alignment(alignment_name: str | None):
     return alignments.get((alignment_name or "left").lower(), WD_ALIGN_PARAGRAPH.LEFT)
 
 
+def get_paragraph_style_name(paragraph) -> str:
+    """Return a paragraph style name without raising on unusual documents."""
+    try:
+        return getattr(paragraph.style, "name", "") or ""
+    except (KeyError, ValueError, AttributeError):
+        return ""
+
+
+def get_paragraph_style_id(paragraph) -> str:
+    """Return a paragraph style id from python-docx or direct XML."""
+    try:
+        style_id = getattr(paragraph.style, "style_id", "") or ""
+        if style_id:
+            return style_id
+    except (KeyError, ValueError, AttributeError):
+        pass
+
+    p_pr = paragraph._p.pPr
+    if p_pr is None:
+        return ""
+    p_style = p_pr.find(qn("w:pStyle"))
+    if p_style is None:
+        return ""
+    return p_style.get(qn("w:val"), "") or ""
+
+
+def detect_heading_type_from_style(paragraph) -> str | None:
+    """Use existing Word Heading styles as strong heading-level signals."""
+    if paragraph is None:
+        return None
+
+    style_signature = "".join(
+        [
+            get_paragraph_style_name(paragraph),
+            " ",
+            get_paragraph_style_id(paragraph),
+        ]
+    )
+    normalized = re.sub(r"[\s_-]+", "", style_signature).lower()
+    for level in (1, 2, 3):
+        if f"heading{level}" in normalized or f"标题{level}" in normalized:
+            return f"heading_{level}"
+    return None
+
+
+def is_word_heading_paragraph(paragraph) -> bool:
+    """Return True when a paragraph already carries a Word Heading style."""
+    return detect_heading_type_from_style(paragraph) is not None
+
+
 def apply_run_font(run, style_config) -> None:
     """设置 run 的字体、字号、加粗，并确保中文 eastAsia 字体生效。"""
     font_name = style_config.get("font", DEFAULT_STYLE["font"])
@@ -1358,7 +1847,8 @@ def apply_run_font(run, style_config) -> None:
         run.font.color.rgb = RGBColor.from_string(str(color))
     run.bold = bold
     run.italic = italic
-    run.font.underline = bool(underline)
+    if "underline" in style_config:
+        run.font.underline = bool(underline)
 
     r_pr = run._element.get_or_add_rPr()
     r_fonts = r_pr.rFonts
@@ -1432,6 +1922,9 @@ def paragraph_style_is_list_style(style) -> bool:
 
 def clear_paragraph_numbering(paragraph) -> None:
     """Clear Word automatic numbering/list formatting without changing text."""
+    if is_word_heading_paragraph(paragraph):
+        return
+
     p_pr = paragraph._p.get_or_add_pPr()
     remove_child_by_tag(p_pr, "w:numPr")
 
@@ -1528,19 +2021,94 @@ def clear_empty_paragraph_numbering_near_captions(paragraphs, index: int) -> Non
             return
 
 
+def record_paragraph_module_detection(
+    context: dict,
+    text: str,
+    paragraph_type: str,
+    was_reference_section: bool,
+    was_toc_section: bool,
+) -> None:
+    """记录段落级模块命中，不影响格式处理决策。"""
+    if not text:
+        return
+
+    if is_english_abstract(text):
+        increment_module_count(context, "abstract_en")
+    if is_english_keywords(text):
+        increment_module_count(context, "keywords_en")
+
+    if is_toc_title(text):
+        increment_module_count(context, "toc")
+        mark_module_flag(context, "toc_protected")
+    elif (was_toc_section or context.get("in_toc_section")) and is_toc_entry(text):
+        increment_module_count(context, "toc")
+        mark_module_flag(context, "toc_protected")
+
+    if paragraph_type in {"heading_1", "heading_2", "heading_3"}:
+        increment_module_count(context, "heading")
+    elif (
+        not was_reference_section
+        and not was_toc_section
+        and not context.get("in_toc_section")
+        and (
+            detect_number_heading_type(text)
+            or re.match(rf"^[{CHINESE_NUMBER}]+[\u3001.\uFF0E]\s*\S+", text)
+        )
+    ):
+        increment_module_count(context, "heading")
+
+    if is_reference_exit_title(text):
+        increment_module_count(context, "appendix")
+        if was_reference_section:
+            mark_module_flag(context, "appendix_boundary")
+
+
+def record_toc_module_detection_from_xml(doc, context: dict) -> None:
+    """Detect Word TOC blocks that python-docx does not expose in doc.paragraphs."""
+    if context.get("module_counts", {}).get("toc"):
+        return
+
+    toc_count = 0
+    for paragraph_element in doc._element.body.iter(qn("w:p")):
+        p_pr = paragraph_element.find(qn("w:pPr"))
+        style_element = p_pr.find(qn("w:pStyle")) if p_pr is not None else None
+        style_id = style_element.get(qn("w:val")) if style_element is not None else ""
+        text = "".join(
+            text_element.text or ""
+            for text_element in paragraph_element.iter(qn("w:t"))
+        ).strip()
+
+        if style_id.upper().startswith("TOC") or is_toc_title(text) or is_toc_entry(text):
+            toc_count += 1
+
+    if toc_count:
+        for _ in range(toc_count):
+            increment_module_count(context, "toc")
+        mark_module_flag(context, "toc_protected")
+
+
 def format_normal_paragraphs(doc, template, report) -> dict:
     """遍历普通段落，识别论文结构并按模板套用格式。"""
     context = {
         "first_non_empty_seen": False,
         "in_reference_section": False,
         "in_abstract_section": False,
+        "in_english_abstract_section": False,
+        "in_toc_section": False,
         "stats": {},
+        "module_counts": {},
+        "module_flags": {},
         "non_empty_count": 0,
     }
 
     for index, paragraph in enumerate(doc.paragraphs):
         text = paragraph.text.strip()
-        paragraph_type = detect_paragraph_type(text, index, context)
+        was_reference_section = bool(context.get("in_reference_section"))
+        was_toc_section = bool(context.get("in_toc_section"))
+        paragraph_type = detect_paragraph_type(text, index, context, paragraph)
+        record_paragraph_module_detection(
+            context, text, paragraph_type, was_reference_section, was_toc_section
+        )
         warning_messages = []
         applied_style = None
 
@@ -1558,7 +2126,10 @@ def format_normal_paragraphs(doc, template, report) -> dict:
             if style_warning:
                 warning_messages.append(style_warning)
 
-            if paragraph_type in NUMBERING_CLEAR_PARAGRAPH_TYPES:
+            if (
+                paragraph_type in NUMBERING_CLEAR_PARAGRAPH_TYPES
+                and not is_word_heading_paragraph(paragraph)
+            ):
                 clear_paragraph_numbering(paragraph)
             apply_paragraph_style(paragraph, style_config)
             apply_caption_pagination_defaults(paragraph, paragraph_type)
@@ -1581,6 +2152,8 @@ def format_normal_paragraphs(doc, template, report) -> dict:
 
     if context["non_empty_count"] == 0:
         add_warning(report, None, "", "未检测到有效正文段落")
+
+    record_toc_module_detection_from_xml(doc, context)
 
     return context
 
@@ -1762,6 +2335,7 @@ def format_document(input_path: Path, output_path: Path, template, report, overw
     context = format_normal_paragraphs(doc, template, report)
     context["stats"]["table"] = format_tables(doc, template, report)
 
+    finalize_module_status(report, context, template)
     report_stats = build_report_stats(context["stats"], report, template)
     report["stats"] = report_stats
 

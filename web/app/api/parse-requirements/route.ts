@@ -97,6 +97,10 @@ export async function POST(request: Request) {
 
     const conflictWarnings = detectRequirementConflicts(requirementsText);
     parsedOverride = mergeWarningsIntoOverride(parsedOverride, conflictWarnings);
+    parsedOverride = mergeModuleRequirementsIntoOverride(
+      parsedOverride,
+      detectUnsupportedModuleRequirements(requirementsText),
+    );
     if (mode === "local" || mode === "mock") {
       rawModelOutput = JSON.stringify(parsedOverride, null, 2);
     }
@@ -184,6 +188,27 @@ function mergeWarningsIntoOverride(override: unknown, warnings: string[]) {
   return {
     ...overrideObject,
     warnings: Array.from(new Set([...existingWarnings, ...warnings])),
+  };
+}
+
+function detectUnsupportedModuleRequirements(requirementsText: string) {
+  return {
+    header_footer: /页眉|页脚/.test(requirementsText),
+    page_number: /页码|页数|页脚.{0,12}页码|页码.{0,12}居中/.test(requirementsText),
+  };
+}
+
+function mergeModuleRequirementsIntoOverride(
+  override: unknown,
+  moduleRequirements: { header_footer: boolean; page_number: boolean },
+) {
+  if (typeof override !== "object" || override === null || Array.isArray(override)) {
+    return override;
+  }
+
+  return {
+    ...(override as Record<string, unknown>),
+    module_requirements: moduleRequirements,
   };
 }
 

@@ -143,6 +143,30 @@ assert.ok(
   JSON.stringify(localConflictResult.warnings),
 );
 
+const clearUnderlineResult = tryParseRequirementsLocally(
+  "全文文字颜色统一为黑色，清除正文中多余的下划线。",
+);
+assert.ok(clearUnderlineResult, "Expected local parser to parse underline cleanup");
+assert.equal(clearUnderlineResult.styles.body.underline, false);
+
+const removeUnderlineResult = tryParseRequirementsLocally("正文去除下划线，一级标题取消下划线。");
+assert.ok(removeUnderlineResult, "Expected local parser to parse underline removal");
+assert.equal(removeUnderlineResult.styles.body.underline, false);
+assert.equal(removeUnderlineResult.styles.heading_1.underline, false);
+
+const addUnderlineResult = tryParseRequirementsLocally("正文使用下划线。");
+assert.ok(addUnderlineResult, "Expected local parser to parse underline add");
+assert.equal(addUnderlineResult.styles.body.underline, true);
+
+const englishAbstractResult = tryParseRequirementsLocally(
+  "英文摘要 Times New Roman 小四加粗；英文关键词 Times New Roman 小四加粗。",
+);
+assert.ok(englishAbstractResult, "Expected local parser to parse English abstract rules");
+assert.ok(!englishAbstractResult.styles.abstract_content);
+assert.ok(!englishAbstractResult.styles.keywords);
+assert.equal(englishAbstractResult.styles.abstract_en_content.font, "Times New Roman");
+assert.equal(englishAbstractResult.styles.keywords_en.font, "Times New Roman");
+
 const normalText = "正文宋体小四，1.5倍行距，首行缩进2字符；一级标题黑体小三。";
 assert.equal(
   detectRequirementConflicts(normalText).filter((warning) => warning.includes("存在冲突"))

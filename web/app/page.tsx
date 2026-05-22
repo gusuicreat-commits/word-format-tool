@@ -67,7 +67,15 @@ type ReportSummary = {
     description?: string;
   } | null;
   stats: Record<string, number>;
+  moduleStatus?: Record<string, ModuleStatusItem>;
   warnings: WarningItem[];
+};
+
+type ModuleStatusItem = {
+  status?: string;
+  count?: number;
+  action?: string;
+  note?: string;
 };
 
 type FormatResult = {
@@ -92,6 +100,25 @@ const REQUIREMENTS_EXAMPLE = `论文标题黑体三号居中；
 二级标题黑体四号；
 图题和表题宋体五号居中；
 参考文献宋体五号。`;
+
+const MODULE_STATUS_ORDER = [
+  "paper_title",
+  "abstract_cn",
+  "keywords_cn",
+  "abstract_en",
+  "keywords_en",
+  "toc",
+  "heading",
+  "body",
+  "table",
+  "figure_caption",
+  "table_caption",
+  "reference",
+  "appendix",
+  "page",
+  "header_footer",
+  "page_number",
+];
 
 export default function HomePage() {
   const [templates, setTemplates] = useState<TemplateItem[]>([]);
@@ -404,6 +431,7 @@ export default function HomePage() {
   const resultRegularOverrideWarnings = resultOverrideWarnings.filter(
     (warning) => !isConflictWarning(warning),
   );
+  const moduleStatus = result?.report?.moduleStatus || {};
   const selectedTemplateTitle = selectedTemplate
     ? getTemplateTitle(selectedTemplate)
     : getTemplateTitle({ name: templateName || "default", description: "" });
@@ -748,6 +776,31 @@ export default function HomePage() {
               <Info label="使用自定义覆盖" value={overrideEnabled ? "是" : "否"} />
               <Info label="覆盖字段数量" value={String(overriddenFields.length)} />
             </div>
+            {Object.keys(moduleStatus).length ? (
+              <details className="module-status-panel">
+                <summary>本次检测到的论文结构模块</summary>
+                <p>
+                  系统只处理高置信度识别到的结构；未检测到或未明确要求的模块不会强行修改。
+                </p>
+                <ul>
+                  {MODULE_STATUS_ORDER.map((moduleKey) => {
+                    const item = moduleStatus[moduleKey];
+                    if (!item) {
+                      return null;
+                    }
+                    return (
+                      <li key={moduleKey}>
+                        <strong>{getModuleStatusLabel(moduleKey)}</strong>
+                        <span>
+                          {getModuleStatusText(item.status)}，{getModuleActionText(item.action)}
+                        </span>
+                        {item.note ? <small>{item.note}</small> : null}
+                      </li>
+                    );
+                  })}
+                </ul>
+              </details>
+            ) : null}
           </div>
 
           <div className="panel">
@@ -854,6 +907,9 @@ function getRuleGroupDescription(type: string) {
     abstract_title: "摘要标题格式",
     abstract_content: "摘要正文格式",
     keywords: "关键词段落格式",
+    abstract_en_title: "英文摘要标题格式",
+    abstract_en_content: "英文摘要正文格式",
+    keywords_en: "英文关键词格式",
     heading_1: "一级标题格式",
     heading_2: "二级标题格式",
     heading_3: "三级标题格式",
@@ -866,6 +922,53 @@ function getRuleGroupDescription(type: string) {
   };
 
   return descriptions[type] || "格式规则";
+}
+
+function getModuleStatusLabel(moduleKey: string) {
+  const labels: Record<string, string> = {
+    paper_title: "论文标题",
+    abstract_cn: "中文摘要",
+    keywords_cn: "中文关键词",
+    abstract_en: "英文摘要",
+    keywords_en: "英文关键词",
+    toc: "目录",
+    heading: "标题层级",
+    body: "正文",
+    table: "表格",
+    figure_caption: "图题",
+    table_caption: "表题",
+    reference: "参考文献",
+    appendix: "附录",
+    page: "页面设置",
+    header_footer: "页眉页脚",
+    page_number: "页码",
+  };
+
+  return labels[moduleKey] || moduleKey;
+}
+
+function getModuleStatusText(status?: string) {
+  const labels: Record<string, string> = {
+    detected: "已检测",
+    not_detected: "未检测",
+    not_requested: "未要求",
+    low_confidence: "低置信度",
+    detected_but_not_supported: "已检测但暂不支持",
+  };
+
+  return labels[status || ""] || status || "未知状态";
+}
+
+function getModuleActionText(action?: string) {
+  const labels: Record<string, string> = {
+    formatted: "已处理",
+    skipped: "已跳过",
+    boundary_only: "用于边界判断",
+    protected: "保护不乱改",
+    warning_only: "仅提醒",
+  };
+
+  return labels[action || ""] || action || "无动作";
 }
 
 function getParseModeLabel(mode: ParseResult["mode"]) {
