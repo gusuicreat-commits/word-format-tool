@@ -63,7 +63,8 @@ PROTECTED_FIRST_PARAGRAPHS = {
 }
 SENTENCE_ENDING_PUNCTUATION = "。？！?!.！"
 ALLOWED_ALIGNMENTS = {"left", "center", "right", "justify"}
-LATIN_DIGIT_SCOPES = {"global", "body"}
+LATIN_DIGIT_SCOPES = {"global", "body", "abstract", "heading"}
+REFERENCE_LATIN_DIGIT_SCOPES = {"reference"}
 PAGE_MARGIN_FIELDS = [
     "top_margin_cm",
     "bottom_margin_cm",
@@ -75,12 +76,18 @@ FIGURE_CAPTION_PATTERN = re.compile(r"^图\s*\d+([-.－—]\d+)?[\.．、\s]*\S+
 
 SUPPORTED_STYLE_TYPES = [
     "paper_title",
+    "abstract_cn_title",
+    "abstract_cn_content",
+    "keywords_cn_label",
+    "keywords_cn_content",
     "abstract_title",
     "abstract_content",
     "keywords",
     "abstract_en_title",
     "abstract_en_content",
     "keywords_en",
+    "keywords_en_label",
+    "keywords_en_content",
     "heading_1",
     "heading_2",
     "heading_3",
@@ -116,8 +123,12 @@ ALLOWED_STYLE_FIELDS = {
     "alignment",
     "line_spacing",
     "first_line_indent_pt",
+    "first_line_indent_chars",
+    "hanging_indent_chars",
     "space_before_pt",
     "space_after_pt",
+    "space_before_lines",
+    "space_after_lines",
     "keep_with_next",
     "keep_together",
 }
@@ -162,12 +173,18 @@ ALIGNMENT_MAP = {
 
 REPORT_STAT_KEYS = [
     "paper_title",
+    "abstract_cn_title",
+    "abstract_cn_content",
+    "keywords_cn_label",
+    "keywords_cn_content",
     "abstract_title",
     "abstract_content",
     "keywords",
     "abstract_en_title",
     "abstract_en_content",
     "keywords_en",
+    "keywords_en_label",
+    "keywords_en_content",
     "heading_1",
     "heading_2",
     "heading_3",
@@ -177,6 +194,13 @@ REPORT_STAT_KEYS = [
     "reference_title",
     "reference_item",
     "table",
+    "keywords_cn_label_count",
+    "keywords_cn_content_count",
+    "keywords_en_label_count",
+    "keywords_en_content_count",
+    "reference_latin_digit_format_count",
+    "reference_hanging_indent_count",
+    "skipped_complex_paragraph_count",
     "style_fallback_count",
     "warning_count",
 ]
@@ -197,6 +221,7 @@ MODULE_STATUS_KEYS = [
     "appendix",
     "page",
     "latin_digit_format",
+    "reference_latin_digit_format",
     "header_footer",
     "page_number",
 ]
@@ -216,6 +241,7 @@ MODULE_DEFAULT_NOTES = {
     "reference": "未检测到参考文献，未处理",
     "appendix": "未检测到附录，未处理",
     "latin_digit_format": "老师要求中未出现英文/数字格式要求，未处理",
+    "reference_latin_digit_format": "老师要求中未出现参考文献英文/数字格式要求，未处理",
     "header_footer": "老师要求中未出现页眉页脚要求，未处理",
     "page_number": "老师要求中未出现页码要求，未处理",
 }
@@ -534,6 +560,55 @@ def normalize_boolean(value, field_name: str) -> bool:
     raise TemplateError(f"{field_name} 应为布尔值 true 或 false。")
 
 
+def normalize_style_indent_fields(style_name: str, normalized_style: dict, warnings: list[str]) -> dict | None:
+    """Normalize first-line indent chars and points for one style."""
+    if "first_line_indent_chars" not in normalized_style:
+        if "first_line_indent_pt" in normalized_style:
+            normalized_style["first_line_indent_pt"] = normalize_indent(
+                normalized_style["first_line_indent_pt"]
+            )
+        return None
+
+    indent_chars = normalized_style["first_line_indent_chars"]
+    if not is_number(indent_chars):
+        raise TemplateError(
+            f"styles.{style_name}.first_line_indent_chars 应为数字，例如 2。"
+        )
+
+    size_pt = normalized_style.get("size_pt", DEFAULT_STYLE["size_pt"])
+    if not is_number(size_pt):
+        size_pt = DEFAULT_STYLE["size_pt"]
+
+    converted_pt = float(indent_chars) * float(size_pt)
+    existing_pt = None
+    status = "generated"
+    if "first_line_indent_pt" in normalized_style:
+        existing_pt = normalize_indent(normalized_style["first_line_indent_pt"])
+        if abs(float(existing_pt) - converted_pt) <= 0.5:
+            normalized_style["first_line_indent_pt"] = existing_pt
+            status = "equivalent"
+        else:
+            normalized_style["first_line_indent_pt"] = existing_pt
+            status = "mismatch"
+            warnings.append(
+                f"styles.{style_name}.first_line_indent_chars={indent_chars} "
+                f"按 {size_pt} pt 字号约等于 {converted_pt:g} pt，"
+                f"与 first_line_indent_pt={existing_pt:g} 不一致，已保留 pt 值。"
+            )
+    else:
+        normalized_style["first_line_indent_pt"] = converted_pt
+
+    return {
+        "style": style_name,
+        "first_line_indent_chars": float(indent_chars),
+        "size_pt": float(size_pt),
+        "converted_pt": converted_pt,
+        "first_line_indent_pt": normalized_style.get("first_line_indent_pt"),
+        "status": status,
+        **({"existing_pt": existing_pt} if existing_pt is not None else {}),
+    }
+
+
 def normalize_format_rules(template, fill_defaults=True):
     """把模板中的中文表达和非标准表达转换成内部标准格式。"""
     if not isinstance(template, dict):
@@ -541,6 +616,7 @@ def normalize_format_rules(template, fill_defaults=True):
 
     normalized_template = deepcopy(template)
     warnings = []
+    indent_normalization = []
 
     page = normalized_template.get("page")
     if isinstance(page, dict):
@@ -573,9 +649,38 @@ def normalize_format_rules(template, fill_defaults=True):
                 normalized_latin_digit_format["size_pt"] = size_cn_pt
         normalized_template["latin_digit_format"] = normalized_latin_digit_format
 
+    reference_latin_digit_format = normalized_template.get("reference_latin_digit_format")
+    if isinstance(reference_latin_digit_format, dict):
+        normalized_reference_latin_digit_format = dict(reference_latin_digit_format)
+        if "size_cn" in normalized_reference_latin_digit_format:
+            size_cn_value = normalized_reference_latin_digit_format["size_cn"]
+            size_cn_pt = normalize_font_size(size_cn_value)
+            if (
+                "size_pt" in normalized_reference_latin_digit_format
+                and is_number(normalized_reference_latin_digit_format["size_pt"])
+            ):
+                if (
+                    abs(
+                        float(normalized_reference_latin_digit_format["size_pt"])
+                        - float(size_cn_pt)
+                    )
+                    > 0.01
+                ):
+                    warnings.append(
+                        f"参考文献英文/数字格式 size_cn={size_cn_value} 与 "
+                        f"size_pt={normalized_reference_latin_digit_format['size_pt']} 不一致，"
+                        "已优先使用 size_pt。"
+                    )
+            else:
+                normalized_reference_latin_digit_format["size_pt"] = size_cn_pt
+        normalized_template["reference_latin_digit_format"] = (
+            normalized_reference_latin_digit_format
+        )
+
     styles = normalized_template.get("styles")
     if not isinstance(styles, dict):
         normalized_template["_template_warnings"] = warnings
+        normalized_template["_indent_normalization"] = indent_normalization
         return normalized_template
 
     for style_name, style_config in list(styles.items()):
@@ -609,10 +714,13 @@ def normalize_format_rules(template, fill_defaults=True):
                 normalized_style["line_spacing"]
             )
 
-        if "first_line_indent_pt" in normalized_style:
-            normalized_style["first_line_indent_pt"] = normalize_indent(
-                normalized_style["first_line_indent_pt"]
-            )
+        indent_summary = normalize_style_indent_fields(
+            style_name,
+            normalized_style,
+            warnings,
+        )
+        if indent_summary is not None:
+            indent_normalization.append(indent_summary)
 
         for field in ["underline", "keep_with_next", "keep_together"]:
             if field in normalized_style:
@@ -632,6 +740,7 @@ def normalize_format_rules(template, fill_defaults=True):
         styles[style_name] = normalized_style
 
     normalized_template["_template_warnings"] = warnings
+    normalized_template["_indent_normalization"] = indent_normalization
     return normalized_template
 
 
@@ -674,9 +783,28 @@ def validate_format_rules(template):
         latin_errors, latin_warnings = validate_latin_digit_format(
             template["latin_digit_format"],
             "模板字段 latin_digit_format",
+            LATIN_DIGIT_SCOPES,
         )
         errors.extend(latin_errors)
         warnings.extend(latin_warnings)
+
+    if "reference_latin_digit_format" in template:
+        reference_latin_errors, reference_latin_warnings = validate_latin_digit_format(
+            template["reference_latin_digit_format"],
+            "模板字段 reference_latin_digit_format",
+            REFERENCE_LATIN_DIGIT_SCOPES,
+        )
+        errors.extend(reference_latin_errors)
+        warnings.extend(reference_latin_warnings)
+
+    toc_errors = validate_toc_config(template.get("toc"), "模板字段 toc")
+    errors.extend(toc_errors)
+
+    unsupported_errors = validate_unsupported_modules(
+        template.get("unsupported_modules"),
+        "模板字段 unsupported_modules",
+    )
+    errors.extend(unsupported_errors)
 
     if has_structural_error:
         return errors, warnings
@@ -732,9 +860,19 @@ def validate_override_rules(override):
     has_page = "page" in override
     has_styles = "styles" in override
     has_latin_digit_format = "latin_digit_format" in override
-    if not has_page and not has_styles and not has_latin_digit_format:
+    has_reference_latin_digit_format = "reference_latin_digit_format" in override
+    has_toc = "toc" in override
+    has_unsupported_modules = "unsupported_modules" in override
+    if (
+        not has_page
+        and not has_styles
+        and not has_latin_digit_format
+        and not has_reference_latin_digit_format
+        and not has_toc
+        and not has_unsupported_modules
+    ):
         warnings.append(
-            "自定义覆盖规则中没有 page、styles 或 latin_digit_format，不会产生实际覆盖效果。"
+            "自定义覆盖规则中没有 page、styles、latin_digit_format 或 V0.4 解析字段，不会产生实际覆盖效果。"
         )
 
     if has_page:
@@ -773,18 +911,40 @@ def validate_override_rules(override):
         latin_errors, latin_warnings = validate_latin_digit_format(
             override["latin_digit_format"],
             "自定义覆盖规则字段 latin_digit_format",
+            LATIN_DIGIT_SCOPES,
         )
         errors.extend(latin_errors)
         warnings.extend(latin_warnings)
 
+    if has_reference_latin_digit_format:
+        reference_latin_errors, reference_latin_warnings = validate_latin_digit_format(
+            override["reference_latin_digit_format"],
+            "自定义覆盖规则字段 reference_latin_digit_format",
+            REFERENCE_LATIN_DIGIT_SCOPES,
+        )
+        errors.extend(reference_latin_errors)
+        warnings.extend(reference_latin_warnings)
+
+    if has_toc:
+        errors.extend(validate_toc_config(override["toc"], "自定义覆盖规则字段 toc"))
+
+    if has_unsupported_modules:
+        errors.extend(
+            validate_unsupported_modules(
+                override["unsupported_modules"],
+                "自定义覆盖规则字段 unsupported_modules",
+            )
+        )
+
     return errors, warnings
 
 
-def validate_latin_digit_format(config, field_path: str):
+def validate_latin_digit_format(config, field_path: str, allowed_scopes=None):
     """检查英文/数字字符格式配置。"""
     errors = []
     warnings = []
     allowed_fields = {"font", "size_pt", "size_cn", "scope"}
+    allowed_scopes = allowed_scopes or LATIN_DIGIT_SCOPES
 
     if not isinstance(config, dict):
         return [f"{field_path} 应为对象。"], warnings
@@ -805,10 +965,67 @@ def validate_latin_digit_format(config, field_path: str):
             errors.append(f"{field_path}.size_cn 使用了未知中文字号：{size_cn}。")
     if "scope" in config:
         scope = config["scope"]
-        if not isinstance(scope, str) or scope not in LATIN_DIGIT_SCOPES:
-            errors.append(f"{field_path}.scope 只能是 global 或 body。")
+        if not isinstance(scope, str) or scope not in allowed_scopes:
+            allowed_scope_text = "、".join(sorted(allowed_scopes))
+            errors.append(f"{field_path}.scope 只能是 {allowed_scope_text}。")
 
     return errors, warnings
+
+
+def validate_toc_config(config, field_path: str):
+    """检查目录处理策略。"""
+    if config is None:
+        return []
+    errors = []
+    if not isinstance(config, dict):
+        return [f"{field_path} 应为对象。"]
+    for field in config:
+        if field != "action":
+            errors.append(f"{field_path}.{field} 不是支持的目录字段。")
+    action = config.get("action")
+    if action is not None and action != "protect":
+        errors.append(f"{field_path}.action 只能是 protect。")
+    return errors
+
+
+UNSUPPORTED_MODULE_KEYS = {
+    "header_footer",
+    "page_number",
+    "footnote",
+    "endnote",
+    "table_three_line",
+    "formula",
+    "figure_caption",
+    "table_caption",
+}
+
+
+def validate_unsupported_modules(config, field_path: str):
+    """检查检测到但暂不支持的模块描述。"""
+    if config is None:
+        return []
+    errors = []
+    if not isinstance(config, dict):
+        return [f"{field_path} 应为对象。"]
+    for module_key, module_config in config.items():
+        module_path = f"{field_path}.{module_key}"
+        if module_key not in UNSUPPORTED_MODULE_KEYS:
+            errors.append(f"{module_path} 不是支持的 unsupported module。")
+            continue
+        if not isinstance(module_config, dict):
+            errors.append(f"{module_path} 应为对象。")
+            continue
+        if module_config.get("status") != "detected_but_not_supported":
+            errors.append(f"{module_path}.status 只能是 detected_but_not_supported。")
+        if module_config.get("action") != "warning_only":
+            errors.append(f"{module_path}.action 只能是 warning_only。")
+        note = module_config.get("note")
+        if not isinstance(note, str) or not note.strip():
+            errors.append(f"{module_path}.note 应为非空字符串。")
+        for field in module_config:
+            if field not in {"status", "action", "note"}:
+                errors.append(f"{module_path}.{field} 不是支持字段。")
+    return errors
 
 
 def validate_style_config(style_name: str, style_config: dict):
@@ -841,6 +1058,11 @@ def validate_style_config(style_name: str, style_config: dict):
         elif size_cn.strip() not in CHINESE_FONT_SIZE_MAP:
             errors.append(f"模板字段 {field_path}.size_cn 使用了未知中文字号：{size_cn}。")
 
+    if "first_line_indent_chars" in style_config and not is_number(
+        style_config["first_line_indent_chars"]
+    ):
+        errors.append(f"模板字段 {field_path}.first_line_indent_chars 应为数字，例如 2。")
+
     if "bold" in style_config and not isinstance(style_config["bold"], bool):
         errors.append(f"模板字段 {field_path}.bold 应为布尔值 true 或 false。")
 
@@ -864,8 +1086,11 @@ def validate_style_config(style_name: str, style_config: dict):
     numeric_fields = [
         "line_spacing",
         "first_line_indent_pt",
+        "hanging_indent_chars",
         "space_before_pt",
         "space_after_pt",
+        "space_before_lines",
+        "space_after_lines",
     ]
     for field in numeric_fields:
         if field in style_config and not is_number(style_config[field]):
@@ -1000,6 +1225,51 @@ def merge_format_rules(base_rules, override_rules):
                 continue
             merged["latin_digit_format"][field] = value
             overridden_fields.append(f"latin_digit_format.{field}")
+
+    override_reference_latin_digit_format = override_rules.get(
+        "reference_latin_digit_format"
+    )
+    if isinstance(override_reference_latin_digit_format, dict):
+        merged.setdefault("reference_latin_digit_format", {})
+        for field, value in override_reference_latin_digit_format.items():
+            if field == "size_cn" or field.startswith("_"):
+                continue
+            merged["reference_latin_digit_format"][field] = value
+            overridden_fields.append(f"reference_latin_digit_format.{field}")
+
+    override_toc = override_rules.get("toc")
+    if isinstance(override_toc, dict):
+        merged["toc"] = {
+            key: value
+            for key, value in override_toc.items()
+            if not str(key).startswith("_")
+        }
+        overridden_fields.extend(
+            f"toc.{field}"
+            for field in merged["toc"]
+            if not str(field).startswith("_")
+        )
+
+    override_unsupported_modules = override_rules.get("unsupported_modules")
+    if isinstance(override_unsupported_modules, dict):
+        merged["unsupported_modules"] = deepcopy(override_unsupported_modules)
+        for module_key, module_config in override_unsupported_modules.items():
+            if isinstance(module_config, dict):
+                for field in module_config:
+                    if not str(field).startswith("_"):
+                        overridden_fields.append(
+                            f"unsupported_modules.{module_key}.{field}"
+                        )
+
+    merged["_indent_normalization"] = [
+        *list(base_rules.get("_indent_normalization", [])),
+        *list(override_rules.get("_indent_normalization", [])),
+    ]
+
+    for metadata_field in ("parser_metadata", "module_requirements"):
+        metadata_value = override_rules.get(metadata_field)
+        if isinstance(metadata_value, dict):
+            merged[metadata_field] = deepcopy(metadata_value)
 
     override_styles = override_rules.get("styles")
     if isinstance(override_styles, dict):
@@ -1148,6 +1418,9 @@ def build_debug_summary(rules) -> dict:
     override_metadata = rules.get("_override", {"enabled": False})
     overridden_fields = override_metadata.get("overridden_fields", [])
     override_warnings = list(override_metadata.get("warnings", []))
+    parser_metadata = rules.get("parser_metadata", {})
+    if not isinstance(parser_metadata, dict):
+        parser_metadata = {}
     return {
         "override_enabled": bool(override_metadata.get("enabled")),
         "overridden_field_count": len(overridden_fields),
@@ -1169,6 +1442,12 @@ def build_debug_summary(rules) -> dict:
         ),
         "override_warning_count": len(override_warnings),
         "override_warnings": override_warnings,
+        "parser_mode": parser_metadata.get("parser_mode"),
+        "raw_ai_rules": parser_metadata.get("raw_ai_rules"),
+        "validated_rules": parser_metadata.get("validated_rules"),
+        "unsupported_modules": final_rules.get("unsupported_modules", {}),
+        "conflict_result": parser_metadata.get("conflict_result"),
+        "indent_normalization": rules.get("_indent_normalization", []),
     }
 
 
@@ -1185,6 +1464,7 @@ def build_rules_debug_payload(rules) -> dict:
             else None
         ),
         "final_rules": clean_format_rules_for_export(rules),
+        "parser_metadata": rules.get("parser_metadata", {}),
         "debug_summary": build_debug_summary(rules),
     }
 
@@ -1213,7 +1493,12 @@ def init_module_status() -> dict:
     """初始化所有模块状态，确保未检测到的模块也出现在报告中。"""
     status = {}
     for module_key in MODULE_STATUS_KEYS:
-        if module_key in {"header_footer", "page_number", "latin_digit_format"}:
+        if module_key in {
+            "header_footer",
+            "page_number",
+            "latin_digit_format",
+            "reference_latin_digit_format",
+        }:
             module_status = "not_requested"
         else:
             module_status = "not_detected"
@@ -1367,11 +1652,19 @@ def get_module_requirement_flags(template) -> dict:
         module_requirements = candidate.get("module_requirements") or candidate.get(
             "_module_requirements"
         )
-        if not isinstance(module_requirements, dict):
-            continue
-        for key in ("header_footer", "page_number"):
-            if isinstance(module_requirements.get(key), bool):
-                flags[key] = module_requirements[key]
+        if isinstance(module_requirements, dict):
+            for key in ("header_footer", "page_number"):
+                if isinstance(module_requirements.get(key), bool):
+                    flags[key] = module_requirements[key]
+        unsupported_modules = candidate.get("unsupported_modules")
+        if isinstance(unsupported_modules, dict):
+            for key in ("header_footer", "page_number"):
+                module_config = unsupported_modules.get(key)
+                if (
+                    isinstance(module_config, dict)
+                    and module_config.get("status") == "detected_but_not_supported"
+                ):
+                    flags[key] = True
     return flags
 
 
@@ -1406,35 +1699,62 @@ def finalize_module_status(report, context, template) -> dict:
 
     keywords_cn_count = stats.get("keywords", 0)
     if keywords_cn_count:
+        keywords_cn_label_count = counts.get("keywords_cn_label_count", 0)
+        keywords_cn_content_count = counts.get("keywords_cn_content_count", 0)
+        keywords_cn_note = "检测到中文关键词并应用关键词样式"
+        if keywords_cn_label_count or keywords_cn_content_count:
+            keywords_cn_note = (
+                f"检测到中文关键词，并已分别格式化 label {keywords_cn_label_count} 处、"
+                f"content {keywords_cn_content_count} 处"
+            )
         set_module_status(
             module_status,
             "keywords_cn",
             "detected",
             keywords_cn_count,
             "formatted",
-            "检测到中文关键词并应用关键词样式",
+            keywords_cn_note,
         )
 
-    abstract_en_count = counts.get("abstract_en", 0)
+    abstract_en_formatted_count = (
+        stats.get("abstract_en_title", 0) + stats.get("abstract_en_content", 0)
+    )
+    abstract_en_count = max(counts.get("abstract_en", 0), abstract_en_formatted_count)
     if abstract_en_count:
+        abstract_en_action = "formatted" if abstract_en_formatted_count else "warning_only"
+        abstract_en_note = "检测到英文摘要并应用英文摘要样式"
+        if not abstract_en_formatted_count:
+            abstract_en_note = "检测到英文摘要，但未执行单独格式化"
         set_module_status(
             module_status,
             "abstract_en",
             "detected",
             abstract_en_count,
-            "warning_only",
-            "检测到英文摘要，当前版本仅记录状态，不单独格式化",
+            abstract_en_action,
+            abstract_en_note,
         )
 
-    keywords_en_count = counts.get("keywords_en", 0)
+    keywords_en_count = max(counts.get("keywords_en", 0), stats.get("keywords_en", 0))
     if keywords_en_count:
+        keywords_en_label_count = counts.get("keywords_en_label_count", 0)
+        keywords_en_content_count = counts.get("keywords_en_content_count", 0)
+        keywords_en_action = "formatted" if stats.get("keywords_en", 0) else "warning_only"
+        keywords_en_note = "检测到英文关键词并应用英文关键词样式"
+        if keywords_en_label_count or keywords_en_content_count:
+            keywords_en_action = "formatted"
+            keywords_en_note = (
+                f"检测到英文关键词，并已分别格式化 label {keywords_en_label_count} 处、"
+                f"content {keywords_en_content_count} 处"
+            )
+        elif not stats.get("keywords_en", 0):
+            keywords_en_note = "检测到英文关键词，但未执行单独格式化"
         set_module_status(
             module_status,
             "keywords_en",
             "detected",
             keywords_en_count,
-            "warning_only",
-            "检测到英文关键词，当前版本仅记录状态，不单独格式化",
+            keywords_en_action,
+            keywords_en_note,
         )
 
     toc_count = counts.get("toc", 0)
@@ -1510,13 +1830,23 @@ def finalize_module_status(report, context, template) -> dict:
 
     reference_count = stats.get("reference_title", 0) + stats.get("reference_item", 0)
     if reference_count:
+        reference_latin_count = counts.get("reference_latin_digit_format", 0)
+        reference_hanging_count = counts.get("reference_hanging_indent", 0)
+        reference_note = "检测到参考文献标题或条目并应用参考文献样式"
+        reference_details = []
+        if reference_latin_count:
+            reference_details.append(f"参考文献英文/数字已处理 {reference_latin_count} 处")
+        if reference_hanging_count:
+            reference_details.append(f"悬挂缩进已应用 {reference_hanging_count} 段")
+        if reference_details:
+            reference_note = "检测到参考文献并应用参考文献样式；" + "；".join(reference_details)
         set_module_status(
             module_status,
             "reference",
             "detected",
             reference_count,
             "formatted",
-            "检测到参考文献标题或条目并应用参考文献样式",
+            reference_note,
         )
 
     appendix_count = counts.get("appendix", 0)
@@ -1578,6 +1908,47 @@ def finalize_module_status(report, context, template) -> dict:
                 latin_note,
             )
 
+    reference_latin_digit_config = get_reference_latin_digit_format(template)
+    if reference_latin_digit_config is not None:
+        reference_latin_count = counts.get("reference_latin_digit_format", 0)
+        reference_latin_skipped_count = counts.get(
+            "reference_latin_digit_format_skipped",
+            0,
+        )
+        reference_latin_font = reference_latin_digit_config.get("font", "当前字符字体")
+        if reference_latin_count:
+            reference_latin_note = (
+                f"检测到参考文献英文/数字格式要求，并已应用 {reference_latin_font}。"
+            )
+            if reference_latin_skipped_count:
+                reference_latin_note += (
+                    f" 另有 {reference_latin_skipped_count} 个复杂片段保守跳过。"
+                )
+            set_module_status(
+                module_status,
+                "reference_latin_digit_format",
+                "detected",
+                reference_latin_count,
+                "formatted",
+                reference_latin_note,
+            )
+        else:
+            reference_latin_note = (
+                "检测到参考文献英文/数字格式要求，但未找到可安全处理的参考文献英文或数字文本。"
+            )
+            if reference_latin_skipped_count:
+                reference_latin_note = (
+                    "检测到参考文献英文/数字格式要求，但目标位于复杂结构中，已保守跳过。"
+                )
+            set_module_status(
+                module_status,
+                "reference_latin_digit_format",
+                "detected",
+                0,
+                "skipped",
+                reference_latin_note,
+            )
+
     requirement_flags = get_module_requirement_flags(template)
     if requirement_flags.get("header_footer"):
         set_module_status(
@@ -1614,6 +1985,48 @@ def finalize_module_status(report, context, template) -> dict:
     report["module_status"] = module_status
     debug_summary = report.setdefault("final_rules_debug", {}).setdefault(
         "debug_summary", {}
+    )
+    execution_counts = dict(counts)
+    debug_summary["execution_counts"] = execution_counts
+    debug_summary["keyword_label_content"] = {
+        "keywords_cn_label_count": counts.get("keywords_cn_label_count", 0),
+        "keywords_cn_content_count": counts.get("keywords_cn_content_count", 0),
+        "keywords_en_label_count": counts.get("keywords_en_label_count", 0),
+        "keywords_en_content_count": counts.get("keywords_en_content_count", 0),
+        "skipped_complex_paragraph_count": counts.get("skipped_complex_paragraph_count", 0),
+    }
+    debug_summary["reference_execution"] = {
+        "reference_latin_digit_format_count": counts.get(
+            "reference_latin_digit_format",
+            0,
+        ),
+        "reference_hanging_indent_count": counts.get("reference_hanging_indent", 0),
+        "reference_latin_digit_format_skipped": counts.get(
+            "reference_latin_digit_format_skipped",
+            0,
+        ),
+    }
+    debug_summary["indent_normalization"] = template.get("_indent_normalization", [])
+    debug_summary["unsupported_modules"] = clean_format_rules_for_export(template).get(
+        "unsupported_modules",
+        {},
+    )
+    debug_summary["heading_style_conflicts"] = context.get(
+        "heading_style_conflicts",
+        [],
+    )
+    debug_summary["heading_numbering_system"] = context.get(
+        "heading_numbering_system",
+        {},
+    )
+    debug_summary["arabic_heading_level1_skipped"] = context.get(
+        "arabic_heading_level1_skipped",
+        [],
+    )
+    debug_summary["heading_style_sync"] = context.get("heading_style_sync", [])
+    debug_summary["heading_style_sync_failures"] = context.get(
+        "heading_style_sync_failures",
+        [],
     )
     debug_summary["module_status"] = module_status
     debug_summary["module_status_summary"] = {
@@ -1726,18 +2139,141 @@ def is_title_candidate(text: str) -> bool:
     return True
 
 
+def is_chapter_heading(text: str) -> bool:
+    """Return True for explicit chapter headings like 第1章 or 第一章."""
+    normalized = text.strip()
+    if not is_title_candidate(normalized):
+        return False
+    return (
+        re.match(rf"^第(?:\d+|[{CHINESE_NUMBER}]+)章(?!为)\s*\S+", normalized)
+        is not None
+    )
+
+
+def is_arabic_level1_heading_candidate(text: str) -> bool:
+    """Return True for single-level Arabic numbered heading candidates."""
+    normalized = text.strip()
+    return re.match(r"^\d+(?:[、.．]|\s+)\s*\S+", normalized) is not None
+
+
+def get_arabic_level1_heading_number(text: str) -> str | None:
+    """Return the leading Arabic level-1 number, if present."""
+    match = re.match(r"^\s*(\d+)(?:[、.．]|\s+)\s*\S+", text.strip())
+    return match.group(1) if match else None
+
+
+def get_numeric_subheading_root_number(text: str) -> str | None:
+    """Return the root number for 1.1 / 1.1.1 style headings."""
+    match = re.match(r"^\s*(\d+)\.\d+(?:\.\d+)*\s*\S+", text.strip())
+    return match.group(1) if match else None
+
+
+def is_strong_arabic_level1_heading_text(text: str) -> bool:
+    """Conservatively allow common short chapter titles without a full hierarchy."""
+    normalized = text.strip()
+    match = re.match(r"^\d+(?:[、.．]|\s+)\s*(\S.*)$", normalized)
+    if not match:
+        return False
+    title_text = match.group(1).strip()
+    if len(title_text) > 16:
+        return False
+    return bool(
+        re.search(
+            r"(绪论|引言|概述|理论|现状|方法|内容|结论|总结|展望|参考文献)",
+            title_text,
+        )
+    )
+
+
 def detect_number_heading_type(text: str) -> str | None:
     """识别 1、1.1、1.1.1 这类数字编号标题。"""
-    match = re.match(r"^(\d+(?:\.\d+)*)(?:[\.、\s]+)\S+", text)
-    if not match:
-        return None
-
-    level = match.group(1).count(".") + 1
-    if level == 1:
+    normalized = text.strip()
+    if is_chapter_heading(normalized):
         return "heading_1"
-    if level == 2:
+    if re.match(r"^\d+\.\d+\.\d+(?:\.\d+)*\s*\S+", normalized):
+        return "heading_3"
+    if re.match(r"^\d+\.\d+(?!\.)\s*\S+", normalized):
         return "heading_2"
-    return "heading_3"
+
+    return None
+
+
+def record_arabic_heading_level1_skipped(
+    context: dict | None,
+    text: str,
+    reason: str,
+) -> None:
+    """Record a cautious non-classification for Arabic single-level numbering."""
+    if context is None:
+        return
+    skipped = context.setdefault("arabic_heading_level1_skipped", [])
+    skipped.append(
+        {
+            "text_preview": make_text_preview(text),
+            "reason": reason,
+        }
+    )
+
+
+def detect_text_heading_type(text: str, context: dict | None = None, paragraph=None) -> str | None:
+    """Use explicit paragraph numbering as the highest-priority heading signal."""
+    normalized = text.strip()
+    if re.match(rf"^[{CHINESE_NUMBER}]+[、.．]\s*\S+", normalized):
+        return "heading_1"
+    if re.match(rf"^[（(][{CHINESE_NUMBER}]+[）)]\s*\S*", normalized):
+        return "heading_2"
+    number_heading_type = detect_number_heading_type(normalized)
+    if number_heading_type:
+        return number_heading_type
+    if is_arabic_level1_heading_candidate(normalized):
+        number = get_arabic_level1_heading_number(normalized)
+        allowed_numbers = set((context or {}).get("arabic_heading_level1_numbers", []))
+        seen_numbers = (context or {}).setdefault(
+            "seen_arabic_heading_level1_numbers",
+            set(),
+        ) if context is not None else set()
+        if (
+            detect_heading_type_from_style(paragraph)
+            or (number in allowed_numbers and number not in seen_numbers)
+            or is_strong_arabic_level1_heading_text(normalized)
+        ):
+            if context is not None and number is not None:
+                seen_numbers.add(number)
+            return "heading_1"
+        record_arabic_heading_level1_skipped(
+            context,
+            normalized,
+            "single_level_arabic_number_without_heading_context",
+        )
+    return None
+
+
+def record_heading_style_conflict(
+    context: dict,
+    paragraph,
+    index: int,
+    text: str,
+    text_pattern_level: str | None,
+) -> None:
+    """Record a Word-style/text-numbering heading conflict for report/debug."""
+    if text_pattern_level is None:
+        return
+    original_style_level = detect_heading_type_from_style(paragraph)
+    if original_style_level is None or original_style_level == text_pattern_level:
+        return
+
+    conflict = {
+        "paragraph_index": index,
+        "text_preview": make_text_preview(text),
+        "original_style": get_paragraph_style_name(paragraph),
+        "original_style_id": get_paragraph_style_id(paragraph),
+        "original_style_level": original_style_level,
+        "text_pattern_level": text_pattern_level,
+        "final_level": text_pattern_level,
+        "reason": "text_pattern_priority",
+    }
+    context.setdefault("heading_style_conflicts", []).append(conflict)
+    increment_module_count(context, "heading_style_conflict")
 
 
 def detect_caption_type(text: str) -> str | None:
@@ -1802,18 +2338,13 @@ def detect_paragraph_type(text, index, context, paragraph=None):
         return "keywords"
 
     if context.get("in_abstract_section"):
-        if is_title_candidate(text) and (
-            re.match(rf"^[{CHINESE_NUMBER}]+[、.．]\s*\S+", text)
-            or re.match(rf"^[（(][{CHINESE_NUMBER}]+[）)]\s*\S*", text)
-            or detect_number_heading_type(text)
-        ):
+        if detect_text_heading_type(text, context, paragraph):
             context["in_abstract_section"] = False
         else:
             return "abstract_content"
 
     if context.get("in_english_abstract_section"):
-        heading_style_type = detect_heading_type_from_style(paragraph)
-        if heading_style_type or detect_number_heading_type(text):
+        if detect_text_heading_type(text, context, paragraph) or detect_heading_type_from_style(paragraph):
             context["in_english_abstract_section"] = False
         else:
             return "abstract_en_content"
@@ -1822,26 +2353,27 @@ def detect_paragraph_type(text, index, context, paragraph=None):
     if caption_type:
         return caption_type
 
+    text_heading_type = detect_text_heading_type(text, context, paragraph)
+    if text_heading_type:
+        record_heading_style_conflict(
+            context,
+            paragraph,
+            index,
+            text,
+            text_heading_type,
+        )
+        return text_heading_type
+
     if not context.get("first_non_empty_seen"):
         if text not in PROTECTED_FIRST_PARAGRAPHS and is_title_candidate(text):
             return "paper_title"
-
-    if not is_title_candidate(text):
-        return "body"
 
     heading_style_type = detect_heading_type_from_style(paragraph)
     if heading_style_type:
         return heading_style_type
 
-    if re.match(rf"^[{CHINESE_NUMBER}]+[、.．]\s*\S+", text):
-        return "heading_1"
-
-    if re.match(rf"^[（(][{CHINESE_NUMBER}]+[）)]\s*\S*", text):
-        return "heading_2"
-
-    number_heading_type = detect_number_heading_type(text)
-    if number_heading_type:
-        return number_heading_type
+    if not is_title_candidate(text):
+        return "body"
 
     return "body"
 
@@ -1953,6 +2485,71 @@ def is_word_heading_paragraph(paragraph) -> bool:
     return detect_heading_type_from_style(paragraph) is not None
 
 
+HEADING_PARAGRAPH_STYLES = {
+    "heading_1": "Heading 1",
+    "heading_2": "Heading 2",
+    "heading_3": "Heading 3",
+}
+
+
+def get_heading_style_conflict(context: dict, paragraph_index: int) -> dict | None:
+    """Return recorded heading style conflict for one paragraph, if any."""
+    for conflict in context.get("heading_style_conflicts", []):
+        if conflict.get("paragraph_index") == paragraph_index:
+            return conflict
+    return None
+
+
+def get_heading_style_conflict_message(conflict: dict) -> str:
+    """Build a report warning for a heading style/text-numbering conflict."""
+    original_style = conflict.get("original_style") or conflict.get("original_style_id") or "未知样式"
+    return (
+        "标题层级冲突：原 Word 样式 "
+        f"{original_style} 对应 {conflict.get('original_style_level')}，"
+        f"但文本编号对应 {conflict.get('text_pattern_level')}，"
+        "已按文本编号层级处理。"
+    )
+
+
+def sync_heading_paragraph_style(
+    paragraph,
+    paragraph_type: str,
+    context: dict,
+) -> None:
+    """Set Word paragraph style to the detected Heading level when possible."""
+    target_style = HEADING_PARAGRAPH_STYLES.get(paragraph_type)
+    if not target_style:
+        return
+    before_style = get_paragraph_style_name(paragraph)
+    before_style_id = get_paragraph_style_id(paragraph)
+    try:
+        paragraph.style = target_style
+    except (KeyError, ValueError, AttributeError) as exc:
+        context.setdefault("heading_style_sync_failures", []).append(
+            {
+                "target_style": target_style,
+                "original_style": before_style,
+                "original_style_id": before_style_id,
+                "error": str(exc),
+            }
+        )
+        increment_module_count(context, "heading_style_sync_failed")
+        return
+
+    after_style = get_paragraph_style_name(paragraph)
+    if after_style != before_style:
+        context.setdefault("heading_style_sync", []).append(
+            {
+                "target_style": target_style,
+                "original_style": before_style,
+                "original_style_id": before_style_id,
+                "final_style": after_style,
+                "final_style_id": get_paragraph_style_id(paragraph),
+            }
+        )
+        increment_module_count(context, "heading_style_synced")
+
+
 def apply_run_font(run, style_config) -> None:
     """设置 run 的字体、字号、加粗，并确保中文 eastAsia 字体生效。"""
     font_name = style_config.get("font", DEFAULT_STYLE["font"])
@@ -1983,6 +2580,18 @@ def apply_run_font(run, style_config) -> None:
     r_fonts.set(qn("w:cs"), font_name)
 
 
+def resolve_paragraph_space_pt(style_config: dict, pt_field: str, lines_field: str, default_value: int | float) -> int | float:
+    """Resolve paragraph spacing in points, accepting explicit line units."""
+    if lines_field in style_config and is_number(style_config[lines_field]):
+        font_size = style_config.get("size_pt", DEFAULT_STYLE["size_pt"])
+        if not is_number(font_size):
+            font_size = DEFAULT_STYLE["size_pt"]
+        return float(style_config[lines_field]) * float(font_size)
+    if pt_field in style_config:
+        return style_config.get(pt_field, default_value)
+    return default_value
+
+
 def apply_paragraph_style(paragraph, style_config) -> None:
     """根据模板 style_config 设置段落格式。"""
     paragraph_format = paragraph.paragraph_format
@@ -1995,10 +2604,20 @@ def apply_paragraph_style(paragraph, style_config) -> None:
         style_config.get("first_line_indent_pt", DEFAULT_STYLE["first_line_indent_pt"])
     )
     paragraph_format.space_before = Pt(
-        style_config.get("space_before_pt", DEFAULT_STYLE["space_before_pt"])
+        resolve_paragraph_space_pt(
+            style_config,
+            "space_before_pt",
+            "space_before_lines",
+            DEFAULT_STYLE["space_before_pt"],
+        )
     )
     paragraph_format.space_after = Pt(
-        style_config.get("space_after_pt", DEFAULT_STYLE["space_after_pt"])
+        resolve_paragraph_space_pt(
+            style_config,
+            "space_after_pt",
+            "space_after_lines",
+            DEFAULT_STYLE["space_after_pt"],
+        )
     )
     if "keep_with_next" in style_config:
         paragraph_format.keep_with_next = bool(style_config["keep_with_next"])
@@ -2010,14 +2629,26 @@ def apply_paragraph_style(paragraph, style_config) -> None:
 
 
 LATIN_DIGIT_TEXT_PATTERN = re.compile(r"[A-Za-z0-9]+(?:[._/-][A-Za-z0-9]+)*")
+REFERENCE_LATIN_DIGIT_TEXT_PATTERN = re.compile(r"[A-Za-z0-9,.:;()\[\]\-/]+")
+CHINESE_KEYWORDS_LABEL_PATTERN = re.compile(r"^\s*关键词[:：]")
+ENGLISH_KEYWORDS_LABEL_PATTERN = re.compile(
+    r"^\s*(?:keywords|key\s+words)[:：]",
+    re.IGNORECASE,
+)
 LATIN_DIGIT_TARGET_PARAGRAPH_TYPES = {
     "paper_title",
+    "abstract_cn_title",
+    "abstract_cn_content",
+    "keywords_cn_label",
+    "keywords_cn_content",
     "abstract_title",
     "abstract_content",
     "keywords",
     "abstract_en_title",
     "abstract_en_content",
     "keywords_en",
+    "keywords_en_label",
+    "keywords_en_content",
     "heading_1",
     "heading_2",
     "heading_3",
@@ -2032,6 +2663,18 @@ def get_latin_digit_format(template) -> dict | None:
     if not isinstance(config, dict):
         return None
     if not isinstance(config.get("font"), str) and not is_number(config.get("size_pt")):
+        return None
+    return config
+
+
+def get_reference_latin_digit_format(template) -> dict | None:
+    """Return a usable reference English/digit character format rule."""
+    config = template.get("reference_latin_digit_format")
+    if not isinstance(config, dict):
+        return None
+    if not isinstance(config.get("font"), str) and not is_number(config.get("size_pt")):
+        return None
+    if config.get("scope", "reference") != "reference":
         return None
     return config
 
@@ -2066,11 +2709,19 @@ def run_is_plain_text_for_latin_digit_split(run) -> bool:
     )
 
 
-def split_latin_digit_text(text: str) -> list[tuple[str, bool]]:
+def paragraph_has_only_plain_text_runs(paragraph) -> bool:
+    """Return True when every run can be safely cloned and split."""
+    return all(run_is_plain_text_for_latin_digit_split(run) for run in paragraph.runs)
+
+
+def split_latin_digit_text(
+    text: str,
+    pattern=LATIN_DIGIT_TEXT_PATTERN,
+) -> list[tuple[str, bool]]:
     """Split text into unchanged non-Latin pieces and Latin/digit pieces."""
     pieces = []
     start = 0
-    for match in LATIN_DIGIT_TEXT_PATTERN.finditer(text):
+    for match in pattern.finditer(text):
         if match.start() > start:
             pieces.append((text[start:match.start()], False))
         pieces.append((match.group(0), True))
@@ -2096,9 +2747,14 @@ def set_latin_digit_run_font(run, config: dict) -> None:
         run.font.size = Pt(config["size_pt"])
 
 
-def format_plain_text_run_latin_digits(run, paragraph, config: dict) -> int:
+def format_plain_text_run_latin_digits(
+    run,
+    paragraph,
+    config: dict,
+    pattern=LATIN_DIGIT_TEXT_PATTERN,
+) -> int:
     """Format Latin/digit fragments in one safe run, splitting if mixed."""
-    pieces = split_latin_digit_text(run.text)
+    pieces = split_latin_digit_text(run.text, pattern)
     latin_piece_count = sum(1 for _, is_latin_piece in pieces if is_latin_piece)
     if latin_piece_count == 0:
         return 0
@@ -2123,6 +2779,62 @@ def format_plain_text_run_latin_digits(run, paragraph, config: dict) -> int:
     return latin_piece_count
 
 
+def apply_latin_digit_config_to_paragraph(
+    paragraph,
+    config: dict,
+    report,
+    context: dict,
+    paragraph_index: int,
+    text: str,
+    count_key: str,
+    skipped_key: str,
+    warning_prefix: str,
+    pattern=LATIN_DIGIT_TEXT_PATTERN,
+) -> None:
+    """Apply one English/digit config to a plain paragraph without changing text."""
+    if not pattern.search(text):
+        return
+
+    if paragraph_has_complex_latin_digit_structure(paragraph):
+        increment_module_count(context, skipped_key)
+        increment_module_count(context, "skipped_complex_paragraph_count")
+        add_warning(
+            report,
+            paragraph_index,
+            text,
+            f"{warning_prefix}处理已跳过字段、超链接或公式等复杂结构，请人工确认。",
+        )
+        return
+
+    formatted_count = 0
+    skipped_run_count = 0
+    for run in list(paragraph.runs):
+        if not pattern.search(run.text):
+            continue
+        if not run_is_plain_text_for_latin_digit_split(run):
+            set_latin_digit_run_font(run, config)
+            formatted_count += 1
+            continue
+        formatted_count += format_plain_text_run_latin_digits(
+            run,
+            paragraph,
+            config,
+            pattern,
+        )
+
+    if formatted_count:
+        increment_module_count(context, count_key, formatted_count)
+    if skipped_run_count:
+        increment_module_count(context, skipped_key, skipped_run_count)
+        increment_module_count(context, "skipped_complex_paragraph_count")
+        add_warning(
+            report,
+            paragraph_index,
+            text,
+            f"{warning_prefix}处理跳过了包含复杂 run 内容的段落片段，请人工确认。",
+        )
+
+
 def apply_latin_digit_format_to_paragraph(
     paragraph,
     paragraph_type: str,
@@ -2137,43 +2849,219 @@ def apply_latin_digit_format_to_paragraph(
     config = get_latin_digit_format(template)
     if config is None or paragraph_type not in LATIN_DIGIT_TARGET_PARAGRAPH_TYPES:
         return
-    if config.get("scope", "global") == "body" and paragraph_type != "body":
+    scope = config.get("scope", "global")
+    if scope == "body" and paragraph_type != "body":
+        return
+    if scope == "abstract" and paragraph_type not in {
+        "abstract_title",
+        "abstract_content",
+        "abstract_cn_title",
+        "abstract_cn_content",
+        "abstract_en_title",
+        "abstract_en_content",
+    }:
+        return
+    if scope == "heading" and paragraph_type not in {"heading_1", "heading_2", "heading_3"}:
         return
     if is_toc_context or is_toc_title(text) or is_toc_entry(text):
         return
-    if not LATIN_DIGIT_TEXT_PATTERN.search(text):
+
+    apply_latin_digit_config_to_paragraph(
+        paragraph,
+        config,
+        report,
+        context,
+        paragraph_index,
+        text,
+        "latin_digit_format",
+        "latin_digit_format_skipped",
+        "英文/数字格式",
+        LATIN_DIGIT_TEXT_PATTERN,
+    )
+
+
+def apply_reference_latin_digit_format_to_paragraph(
+    paragraph,
+    paragraph_type: str,
+    template,
+    report,
+    context: dict,
+    paragraph_index: int,
+    text: str,
+) -> None:
+    """Apply reference-only English/digit formatting to reference items."""
+    if paragraph_type != "reference_item":
+        return
+    config = get_reference_latin_digit_format(template)
+    if config is None:
+        return
+    apply_latin_digit_config_to_paragraph(
+        paragraph,
+        config,
+        report,
+        context,
+        paragraph_index,
+        text,
+        "reference_latin_digit_format",
+        "reference_latin_digit_format_skipped",
+        "参考文献英文/数字格式",
+        REFERENCE_LATIN_DIGIT_TEXT_PATTERN,
+    )
+
+
+def get_keyword_label_end(paragraph_type: str, text: str) -> int | None:
+    """Return the label/content split point for keyword paragraphs."""
+    if paragraph_type == "keywords":
+        match = CHINESE_KEYWORDS_LABEL_PATTERN.match(text)
+    elif paragraph_type == "keywords_en":
+        match = ENGLISH_KEYWORDS_LABEL_PATTERN.match(text)
+    else:
+        match = None
+    return match.end() if match is not None else None
+
+
+def clone_run_with_text(run, paragraph, text: str):
+    """Clone one run and replace its plain text."""
+    cloned_run_element = deepcopy(run._r)
+    cloned_run = Run(cloned_run_element, paragraph)
+    cloned_run.text = text
+    return cloned_run_element, cloned_run
+
+
+def split_run_by_keyword_boundary(run, paragraph, start_index: int, label_end: int, label_style: dict, content_style: dict) -> tuple[bool, bool]:
+    """Split one plain run around the keyword label boundary."""
+    run_text = run.text
+    run_end = start_index + len(run_text)
+    if not run_text:
+        return False, False
+
+    if run_end <= label_end:
+        apply_run_font(run, label_style)
+        return True, False
+    if start_index >= label_end:
+        apply_run_font(run, content_style)
+        return False, True
+
+    label_text = run_text[: label_end - start_index]
+    content_text = run_text[label_end - start_index :]
+    parent = run._r.getparent()
+    if parent is None or Run is None:
+        return False, False
+
+    insert_index = parent.index(run._r)
+    if label_text:
+        label_run_element, label_run = clone_run_with_text(run, paragraph, label_text)
+        apply_run_font(label_run, label_style)
+        parent.insert(insert_index, label_run_element)
+        insert_index += 1
+    if content_text:
+        content_run_element, content_run = clone_run_with_text(run, paragraph, content_text)
+        apply_run_font(content_run, content_style)
+        parent.insert(insert_index, content_run_element)
+    parent.remove(run._r)
+    return bool(label_text), bool(content_text)
+
+
+def apply_keyword_label_content_format(
+    paragraph,
+    paragraph_type: str,
+    template,
+    report,
+    context: dict,
+    paragraph_index: int,
+) -> None:
+    """Apply separate run styles to keyword label and content when safe."""
+    full_text = paragraph.text
+    label_end = get_keyword_label_end(paragraph_type, full_text)
+    if label_end is None:
         return
 
-    if paragraph_has_complex_latin_digit_structure(paragraph):
-        increment_module_count(context, "latin_digit_format_skipped")
+    styles = template.get("styles", {})
+    if paragraph_type == "keywords":
+        label_key = "keywords_cn_label"
+        content_key = "keywords_cn_content"
+        skipped_key = "keywords_cn_label_content_skipped"
+        warning_prefix = "中文关键词"
+    else:
+        label_key = "keywords_en_label"
+        content_key = "keywords_en_content"
+        skipped_key = "keywords_en_label_content_skipped"
+        warning_prefix = "英文关键词"
+
+    label_style = styles.get(label_key)
+    content_style = styles.get(content_key)
+    if not isinstance(label_style, dict) or not isinstance(content_style, dict):
+        return
+
+    if (
+        paragraph_has_complex_latin_digit_structure(paragraph)
+        or not paragraph_has_only_plain_text_runs(paragraph)
+    ):
+        increment_module_count(context, skipped_key)
+        increment_module_count(context, "skipped_complex_paragraph_count")
         add_warning(
             report,
             paragraph_index,
-            text,
-            "英文/数字格式处理已跳过字段、超链接或公式等复杂结构，请人工确认。",
+            full_text,
+            f"{warning_prefix}段落包含超链接、域、公式或复杂 run，已保守跳过 label/content 拆分。",
         )
         return
 
-    formatted_count = 0
-    skipped_run_count = 0
+    original_text = paragraph.text
+    label_formatted = False
+    content_formatted = False
+    cursor = 0
     for run in list(paragraph.runs):
-        if not LATIN_DIGIT_TEXT_PATTERN.search(run.text):
-            continue
-        if not run_is_plain_text_for_latin_digit_split(run):
-            skipped_run_count += 1
-            continue
-        formatted_count += format_plain_text_run_latin_digits(run, paragraph, config)
+        run_length = len(run.text)
+        run_label, run_content = split_run_by_keyword_boundary(
+            run,
+            paragraph,
+            cursor,
+            label_end,
+            label_style,
+            content_style,
+        )
+        label_formatted = label_formatted or run_label
+        content_formatted = content_formatted or run_content
+        cursor += run_length
 
-    if formatted_count:
-        increment_module_count(context, "latin_digit_format", formatted_count)
-    if skipped_run_count:
-        increment_module_count(context, "latin_digit_format_skipped", skipped_run_count)
+    if paragraph.text != original_text:
+        increment_module_count(context, skipped_key)
+        increment_module_count(context, "skipped_complex_paragraph_count")
         add_warning(
             report,
             paragraph_index,
-            text,
-            "英文/数字格式处理跳过了包含复杂 run 内容的段落片段，请人工确认。",
+            original_text,
+            f"{warning_prefix}段落拆分后文本校验失败，请人工确认。",
         )
+        return
+
+    if label_formatted:
+        increment_module_count(context, f"{label_key}_count")
+    if content_formatted and label_end < len(original_text):
+        increment_module_count(context, f"{content_key}_count")
+
+
+def apply_reference_hanging_indent(
+    paragraph,
+    paragraph_type: str,
+    style_config: dict,
+    context: dict,
+) -> None:
+    """Apply reference-item hanging indent in character units."""
+    if paragraph_type != "reference_item":
+        return
+    hanging_chars = style_config.get("hanging_indent_chars")
+    if not is_number(hanging_chars):
+        return
+    size_pt = style_config.get("size_pt", DEFAULT_STYLE["size_pt"])
+    if not is_number(size_pt):
+        size_pt = DEFAULT_STYLE["size_pt"]
+    indent_pt = float(hanging_chars) * float(size_pt)
+    paragraph_format = paragraph.paragraph_format
+    paragraph_format.left_indent = Pt(indent_pt)
+    paragraph_format.first_line_indent = Pt(-indent_pt)
+    increment_module_count(context, "reference_hanging_indent")
 
 
 def remove_child_by_tag(parent, tag_name: str) -> bool:
@@ -2294,6 +3182,50 @@ def increment_stat(context: dict, paragraph_type: str) -> None:
     stats[paragraph_type] = stats.get(paragraph_type, 0) + 1
 
 
+def analyze_heading_numbering_system(paragraphs) -> dict:
+    """Pre-scan document heading numbering signals for cautious Arabic level-1 detection."""
+    arabic_level1_count = 0
+    numeric_subheading_count = 0
+    chapter_heading_count = 0
+    arabic_level1_numbers = set()
+    numeric_subheading_root_numbers = set()
+    for paragraph in paragraphs:
+        text = paragraph.text.strip()
+        if not text or is_toc_title(text) or is_toc_entry(text):
+            continue
+        if is_chapter_heading(text):
+            chapter_heading_count += 1
+            continue
+        root_number = get_numeric_subheading_root_number(text)
+        if root_number is not None:
+            numeric_subheading_root_numbers.add(root_number)
+        number_heading_type = detect_number_heading_type(text)
+        if number_heading_type in {"heading_2", "heading_3"}:
+            numeric_subheading_count += 1
+        elif is_arabic_level1_heading_candidate(text):
+            arabic_level1_count += 1
+            level1_number = get_arabic_level1_heading_number(text)
+            if level1_number is not None:
+                arabic_level1_numbers.add(level1_number)
+
+    allowed_level1_numbers = sorted(
+        arabic_level1_numbers.intersection(numeric_subheading_root_numbers),
+        key=lambda value: int(value),
+    )
+
+    return {
+        "arabic_level1_count": arabic_level1_count,
+        "numeric_subheading_count": numeric_subheading_count,
+        "chapter_heading_count": chapter_heading_count,
+        "arabic_heading_level1_numbers": allowed_level1_numbers,
+        "numeric_subheading_root_numbers": sorted(
+            numeric_subheading_root_numbers,
+            key=lambda value: int(value),
+        ),
+        "arabic_heading_system": bool(allowed_level1_numbers),
+    }
+
+
 def clear_empty_paragraph_numbering_near_captions(paragraphs, index: int) -> None:
     """Clear list markers from an empty paragraph adjacent to a caption."""
     paragraph = paragraphs[index]
@@ -2377,6 +3309,7 @@ def record_toc_module_detection_from_xml(doc, context: dict) -> None:
 
 def format_normal_paragraphs(doc, template, report) -> dict:
     """遍历普通段落，识别论文结构并按模板套用格式。"""
+    heading_numbering_system = analyze_heading_numbering_system(doc.paragraphs)
     context = {
         "first_non_empty_seen": False,
         "in_reference_section": False,
@@ -2387,6 +3320,11 @@ def format_normal_paragraphs(doc, template, report) -> dict:
         "module_counts": {},
         "module_flags": {},
         "non_empty_count": 0,
+        "heading_numbering_system": heading_numbering_system,
+        "arabic_heading_system": heading_numbering_system["arabic_heading_system"],
+        "arabic_heading_level1_numbers": set(
+            heading_numbering_system.get("arabic_heading_level1_numbers", [])
+        ),
     }
 
     for index, paragraph in enumerate(doc.paragraphs):
@@ -2408,6 +3346,15 @@ def format_normal_paragraphs(doc, template, report) -> dict:
                 warning_messages.append(paragraph_warning)
                 add_warning(report, index, text, paragraph_warning)
 
+            heading_conflict = get_heading_style_conflict(context, index)
+            if heading_conflict:
+                heading_conflict_message = get_heading_style_conflict_message(
+                    heading_conflict
+                )
+                heading_conflict["message"] = heading_conflict_message
+                warning_messages.append(heading_conflict_message)
+                add_warning(report, index, text, heading_conflict_message)
+
             style_config, applied_style, style_warning = get_style_config(
                 template, paragraph_type, report, index, text
             )
@@ -2419,8 +3366,23 @@ def format_normal_paragraphs(doc, template, report) -> dict:
                 and not is_word_heading_paragraph(paragraph)
             ):
                 clear_paragraph_numbering(paragraph)
+            sync_heading_paragraph_style(paragraph, paragraph_type, context)
             apply_paragraph_style(paragraph, style_config)
             apply_caption_pagination_defaults(paragraph, paragraph_type)
+            apply_reference_hanging_indent(
+                paragraph,
+                paragraph_type,
+                style_config,
+                context,
+            )
+            apply_keyword_label_content_format(
+                paragraph,
+                paragraph_type,
+                template,
+                report,
+                context,
+                index,
+            )
             apply_latin_digit_format_to_paragraph(
                 paragraph,
                 paragraph_type,
@@ -2430,6 +3392,15 @@ def format_normal_paragraphs(doc, template, report) -> dict:
                 index,
                 text,
                 was_toc_section or bool(context.get("in_toc_section")),
+            )
+            apply_reference_latin_digit_format_to_paragraph(
+                paragraph,
+                paragraph_type,
+                template,
+                report,
+                context,
+                index,
+                text,
             )
             add_paragraph_report(
                 report,
@@ -2570,6 +3541,38 @@ def build_report_stats(stats, report, template) -> dict:
     """生成报告和命令行共用的统计信息。"""
     report_stats = {key: stats.get(key, 0) for key in REPORT_STAT_KEYS}
     report_stats["table"] = stats.get("table", 0)
+    module_counts = report.get("final_rules_debug", {}).get("debug_summary", {}).get(
+        "execution_counts",
+        {},
+    )
+    report_stats["keywords_cn_label_count"] = module_counts.get(
+        "keywords_cn_label_count",
+        0,
+    )
+    report_stats["keywords_cn_content_count"] = module_counts.get(
+        "keywords_cn_content_count",
+        0,
+    )
+    report_stats["keywords_en_label_count"] = module_counts.get(
+        "keywords_en_label_count",
+        0,
+    )
+    report_stats["keywords_en_content_count"] = module_counts.get(
+        "keywords_en_content_count",
+        0,
+    )
+    report_stats["reference_latin_digit_format_count"] = module_counts.get(
+        "reference_latin_digit_format",
+        0,
+    )
+    report_stats["reference_hanging_indent_count"] = module_counts.get(
+        "reference_hanging_indent",
+        0,
+    )
+    report_stats["skipped_complex_paragraph_count"] = module_counts.get(
+        "skipped_complex_paragraph_count",
+        0,
+    )
     report_stats["style_fallback_count"] = template.get("_runtime", {}).get(
         "fallback_count", 0
     )

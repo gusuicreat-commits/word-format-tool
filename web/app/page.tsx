@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, ReactNode, useEffect, useMemo, useState } from "react";
+import { FormEvent, ReactNode, useEffect, useMemo, useRef, useState } from "react";
 
 type TemplateItem = {
   name: string;
@@ -28,19 +28,36 @@ type RuleSummaryItem = {
 type ParseResult = {
   success: boolean;
   message: string;
+  errorCode?: string;
+  recoveryActions?: RecoveryAction[];
   jobId?: string;
-  mode?: "kimi" | "mock" | "local";
+  mode?: "kimi_canonical" | "mock_canonical" | "kimi" | "mock" | "local";
+  parserMode?: "kimi_canonical" | "mock_canonical" | "kimi" | "mock" | "local";
+  complexity?: unknown;
+  canonicalRequirementsText?: string;
   override?: unknown;
   rawModelOutput?: string;
   parsedOverride?: unknown;
+  parsedRules?: unknown;
+  rawAiRules?: unknown;
+  normalizedAiRules?: unknown;
   normalizedOverride?: unknown;
+  validatedRules?: unknown;
   finalRules?: unknown;
   debugSummary?: unknown;
+  unsupportedModules?: unknown;
+  conflictResult?: unknown;
   overriddenFields?: string[];
   warnings?: string[];
   summary?: RuleSummaryItem[];
   finalRulesPreview?: unknown;
   cached?: boolean;
+};
+
+type RecoveryAction = {
+  id: string;
+  label: string;
+  description?: string;
 };
 
 type ReportSummary = {
@@ -132,6 +149,7 @@ export default function HomePage() {
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [parseStatus, setParseStatus] = useState<ParseStatus>("idle");
   const [parseError, setParseError] = useState("");
+  const [parseRecoveryActions, setParseRecoveryActions] = useState<RecoveryAction[]>([]);
   const [formatStatus, setFormatStatus] = useState<FormatStatus>("idle");
   const [formatError, setFormatError] = useState("");
   const [result, setResult] = useState<FormatResult | null>(null);
@@ -139,6 +157,11 @@ export default function HomePage() {
   const [isParsing, setIsParsing] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [conflictAcknowledged, setConflictAcknowledged] = useState(false);
+  const [rulesAcknowledged, setRulesAcknowledged] = useState(false);
+  const [parseSlowHintVisible, setParseSlowHintVisible] = useState(false);
+  const requirementsTextRef = useRef<HTMLTextAreaElement>(null);
+  const parseAbortControllerRef = useRef<AbortController | null>(null);
+  const parseRunIdRef = useRef(0);
 
   useEffect(() => {
     let active = true;
@@ -184,15 +207,25 @@ export default function HomePage() {
   const hasUnconfirmedConflictWarnings = Boolean(
     parseResult?.warnings?.some(isConflictWarning) && !conflictAcknowledged,
   );
+  const requiresRulesAcknowledgement = Boolean(requirementsText.trim() && parsedOverride);
+  const hasUnconfirmedRules = requiresRulesAcknowledgement && !rulesAcknowledged;
   const canSubmit = useMemo(() => {
     return Boolean(
       file &&
         templateName &&
         !isSubmitting &&
         !isParsing &&
+        !hasUnconfirmedRules &&
         !hasUnconfirmedConflictWarnings,
     );
-  }, [file, templateName, isSubmitting, isParsing, hasUnconfirmedConflictWarnings]);
+  }, [
+    file,
+    templateName,
+    isSubmitting,
+    isParsing,
+    hasUnconfirmedRules,
+    hasUnconfirmedConflictWarnings,
+  ]);
 
   function resetFormatFeedback() {
     setResult(null);
@@ -231,8 +264,11 @@ export default function HomePage() {
     setParsedOverride(null);
     setParseResult(null);
     setParseError("");
+    setParseRecoveryActions([]);
+    setParseSlowHintVisible(false);
     setParseStatus("idle");
     setConflictAcknowledged(false);
+    setRulesAcknowledged(false);
     resetFormatFeedback();
   }
 
@@ -261,11 +297,16 @@ export default function HomePage() {
     setOverrideFile(nextFile);
   }
 
-  async function handleParseRequirements() {
+  async function handleParseRequirements(forceMode: "auto" | "local" = "auto") {
+    const runId = parseRunIdRef.current + 1;
+    parseRunIdRef.current = runId;
     setParseError("");
+    setParseRecoveryActions([]);
+    setParseSlowHintVisible(false);
     setParseResult(null);
     setParsedOverride(null);
     setConflictAcknowledged(false);
+    setRulesAcknowledged(false);
     resetFormatFeedback();
 
     const trimmedText = requirementsText.trim();
@@ -284,7 +325,13 @@ export default function HomePage() {
     setIsParsing(true);
     setParseStatus("parsing");
     const controller = new AbortController();
+    parseAbortControllerRef.current = controller;
     const timeoutId = window.setTimeout(() => controller.abort(), 150_000);
+    const slowHintTimeoutId = window.setTimeout(() => {
+      if (parseRunIdRef.current === runId) {
+        setParseSlowHintVisible(true);
+      }
+    }, 15_000);
 
     try {
       const response = await fetch("/api/parse-requirements", {
@@ -294,31 +341,59 @@ export default function HomePage() {
         body: JSON.stringify({
           requirementsText: trimmedText,
           template: templateName || "default",
+          forceMode,
         }),
       });
       const data = (await response.json()) as ParseResult;
+      if (parseRunIdRef.current !== runId) {
+        return;
+      }
 
       if (!data.success) {
         setParseStatus("error");
         setParseError(data.message || "格式要求解析失败。");
+        setParseRecoveryActions(data.recoveryActions || getDefaultRecoveryActions());
         return;
       }
 
       setParseResult(data);
       setParsedOverride(data.normalizedOverride || data.override || data.parsedOverride || null);
       setConflictAcknowledged(false);
+      setRulesAcknowledged(false);
       setParseStatus("success");
     } catch (error) {
+      if (parseRunIdRef.current !== runId) {
+        return;
+      }
       setParseStatus("error");
       if (error instanceof DOMException && error.name === "AbortError") {
         setParseError("解析请求超时，请检查 Kimi API 网络、模型名，或稍后重试。");
       } else {
         setParseError("解析请求失败：本地 Next.js 服务可能已停止，请在 web 目录重新运行 npm run dev。");
       }
+      setParseRecoveryActions(getDefaultRecoveryActions());
     } finally {
       window.clearTimeout(timeoutId);
-      setIsParsing(false);
+      window.clearTimeout(slowHintTimeoutId);
+      if (parseRunIdRef.current === runId) {
+        parseAbortControllerRef.current = null;
+        setParseSlowHintVisible(false);
+        setIsParsing(false);
+      }
     }
+  }
+
+  function handleUseLocalParser() {
+    parseAbortControllerRef.current?.abort();
+    void handleParseRequirements("local");
+  }
+
+  function handleEditRequirementsAfterParseError() {
+    setParseError("");
+    setParseRecoveryActions([]);
+    setParseSlowHintVisible(false);
+    setParseStatus("idle");
+    requirementsTextRef.current?.focus();
   }
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
@@ -341,6 +416,12 @@ export default function HomePage() {
 
     if (requirementsText.trim() && !parsedOverride) {
       setFormatError("请先点击“解析格式要求”，确认识别结果后再开始处理。");
+      setFormatStatus("error");
+      return;
+    }
+
+    if (hasUnconfirmedRules) {
+      setFormatError("请先确认识别出的格式规则，再开始处理 Word。");
       setFormatStatus("error");
       return;
     }
@@ -474,6 +555,7 @@ export default function HomePage() {
             </label>
             <textarea
               id="requirementsText"
+              ref={requirementsTextRef}
               value={requirementsText}
               disabled={isSubmitting || isParsing}
               spellCheck={false}
@@ -488,7 +570,7 @@ export default function HomePage() {
                 className="button primary-button"
                 type="button"
                 disabled={isParsing || !requirementsText.trim()}
-                onClick={handleParseRequirements}
+                onClick={() => handleParseRequirements()}
               >
                 {isParsing ? "解析中" : "解析格式要求"}
               </button>
@@ -512,10 +594,54 @@ export default function HomePage() {
             <StatusLine
               status={parseStatus}
               idle="可粘贴老师的自然语言格式要求，然后点击解析。"
-              loading="正在解析老师格式要求……"
+              loading="正在调用 Kimi 智能解析，复杂要求可能需要 20-60 秒。"
               success="格式要求解析成功，请检查识别结果。"
               error={`解析失败：${parseError}`}
             />
+            {parseStatus === "parsing" && parseSlowHintVisible ? (
+              <div className="notice parse-wait-notice" role="status">
+                <p>Kimi 仍在解析复杂要求，可继续等待或改用本地快速解析。</p>
+                <button
+                  className="button secondary"
+                  type="button"
+                  disabled={!requirementsText.trim()}
+                  onClick={handleUseLocalParser}
+                >
+                  改用本地快速解析
+                </button>
+              </div>
+            ) : null}
+            {parseStatus === "error" && parseRecoveryActions.length ? (
+              <div className="parse-recovery" role="group" aria-label="解析失败后的可选操作">
+                <p>可以选择下面的方式继续，但解析成功并确认规则前不会修改 Word。</p>
+                <div className="inline-actions">
+                  <button
+                    className="button primary-button"
+                    type="button"
+                    disabled={isParsing || !requirementsText.trim()}
+                    onClick={() => handleParseRequirements()}
+                  >
+                    重试 Kimi
+                  </button>
+                  <button
+                    className="button secondary"
+                    type="button"
+                    disabled={isParsing || !requirementsText.trim()}
+                    onClick={handleUseLocalParser}
+                  >
+                    改用本地快速解析
+                  </button>
+                  <button
+                    className="text-button secondary-action"
+                    type="button"
+                    disabled={isParsing}
+                    onClick={handleEditRequirementsAfterParseError}
+                  >
+                    返回修改要求编辑
+                  </button>
+                </div>
+              </div>
+            ) : null}
           </div>
         </section>
 
@@ -549,6 +675,12 @@ export default function HomePage() {
                 {parseResult.cached ? "，已使用缓存" : ""}
               </p>
             ) : null}
+            {parseResult.canonicalRequirementsText ? (
+              <div className="canonical-requirements">
+                <h3>Kimi 规范化清单</h3>
+                <pre>{parseResult.canonicalRequirementsText}</pre>
+              </div>
+            ) : null}
             {parseResult.summary?.length ? (
               <ul className="rule-list">
                 {parseResult.summary.map((item) => (
@@ -581,6 +713,15 @@ export default function HomePage() {
             <p className="review-hint">
               下方仅显示老师要求中识别出的覆盖字段；未显示的字段会继续使用基础模板规则。
             </p>
+            <label className="rules-confirm">
+              <input
+                type="checkbox"
+                checked={rulesAcknowledged}
+                disabled={isSubmitting}
+                onChange={(event) => setRulesAcknowledged(event.target.checked)}
+              />
+              <span>我已确认以上识别出的格式规则，再开始修改 Word。</span>
+            </label>
             {parseConflictWarnings.length ? (
               <ConflictWarningCard warnings={parseConflictWarnings}>
                 <label className="conflict-confirm">
@@ -606,9 +747,16 @@ export default function HomePage() {
             ) : null}
             <details className="json-details debug-details">
               <summary>调试信息</summary>
+              <DebugBlock title="canonicalRequirementsText" value={parseResult.canonicalRequirementsText || ""} />
               <DebugBlock title="rawModelOutput" value={parseResult.rawModelOutput || ""} />
               <DebugBlock title="parsedOverride" value={parseResult.parsedOverride} />
+              <DebugBlock title="parsedRules" value={parseResult.parsedRules} />
+              <DebugBlock title="raw_ai_rules" value={parseResult.rawAiRules} />
+              <DebugBlock title="normalized_ai_rules" value={parseResult.normalizedAiRules} />
               <DebugBlock title="normalizedOverride" value={parseResult.normalizedOverride} />
+              <DebugBlock title="validatedRules" value={parseResult.validatedRules} />
+              <DebugBlock title="unsupportedModules" value={parseResult.unsupportedModules} />
+              <DebugBlock title="conflictResult" value={parseResult.conflictResult} />
               <DebugBlock title="finalRules" value={parseResult.finalRules} />
               <DebugBlock title="debugSummary" value={parseResult.debugSummary} />
             </details>
@@ -628,7 +776,7 @@ export default function HomePage() {
               ) : null}
               <StatusLine
                 status={formatStatus}
-                idle="识别结果确认后，可以直接开始修改 Word。"
+                idle="确认识别结果后，可以开始修改 Word。"
                 loading="正在识别论文结构并应用格式……"
                 success="处理完成，可以下载修改后的 Word。"
                 error={`处理失败：${formatError}`}
@@ -675,6 +823,7 @@ export default function HomePage() {
                           setParseResult(null);
                           setParseStatus("idle");
                           setConflictAcknowledged(false);
+                          setRulesAcknowledged(false);
                         }}
                       >
                         <strong>{getTemplateTitle(template)}</strong>
@@ -974,6 +1123,14 @@ function getModuleActionText(action?: string) {
 }
 
 function getParseModeLabel(mode: ParseResult["mode"]) {
+  if (mode === "kimi_canonical") {
+    return "Kimi 规范化清单";
+  }
+
+  if (mode === "mock_canonical") {
+    return "本地 mock 规范化清单";
+  }
+
   if (mode === "mock") {
     return "本地 mock";
   }
@@ -983,6 +1140,26 @@ function getParseModeLabel(mode: ParseResult["mode"]) {
   }
 
   return "Kimi API";
+}
+
+function getDefaultRecoveryActions(): RecoveryAction[] {
+  return [
+    {
+      id: "retry_kimi",
+      label: "重试 Kimi",
+      description: "重新调用 Kimi 解析，不会修改 Word。",
+    },
+    {
+      id: "use_local_parser",
+      label: "改用本地快速解析",
+      description: "按本地规则保守解析，复杂细分要求需要人工确认。",
+    },
+    {
+      id: "edit_requirements",
+      label: "返回修改要求编辑",
+      description: "继续编辑老师格式要求后再解析。",
+    },
+  ];
 }
 
 function isConflictWarning(warning: string) {

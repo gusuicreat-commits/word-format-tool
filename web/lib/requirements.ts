@@ -4,6 +4,10 @@ export type OverrideRules = {
   page?: Record<string, unknown>;
   styles?: Record<string, Record<string, unknown>>;
   latin_digit_format?: Record<string, unknown>;
+  reference_latin_digit_format?: Record<string, unknown>;
+  toc?: Record<string, unknown>;
+  unsupported_modules?: Record<string, Record<string, unknown>>;
+  parser_metadata?: Record<string, unknown>;
   warnings?: unknown;
 };
 
@@ -22,12 +26,18 @@ export type RuleFieldItem = {
 
 const STYLE_LABELS: Record<string, string> = {
   paper_title: "论文标题",
+  abstract_cn_title: "中文摘要标题",
+  abstract_cn_content: "中文摘要正文",
+  keywords_cn_label: "中文关键词标签",
+  keywords_cn_content: "中文关键词内容",
   abstract_title: "摘要标题",
   abstract_content: "摘要正文",
   keywords: "关键词",
   abstract_en_title: "英文摘要标题",
   abstract_en_content: "英文摘要正文",
   keywords_en: "英文关键词",
+  keywords_en_label: "英文关键词标签",
+  keywords_en_content: "英文关键词内容",
   heading_1: "一级标题",
   heading_2: "二级标题",
   heading_3: "三级标题",
@@ -41,16 +51,22 @@ const STYLE_LABELS: Record<string, string> = {
 
 const STYLE_ORDER = [
   "paper_title",
-  "body",
+  "abstract_cn_title",
+  "abstract_cn_content",
+  "keywords_cn_label",
+  "keywords_cn_content",
   "abstract_title",
   "abstract_content",
   "keywords",
   "abstract_en_title",
   "abstract_en_content",
+  "keywords_en_label",
+  "keywords_en_content",
   "keywords_en",
   "heading_1",
   "heading_2",
   "heading_3",
+  "body",
   "table_caption",
   "figure_caption",
   "reference_title",
@@ -67,6 +83,25 @@ const ALIGNMENT_LABELS: Record<string, string> = {
   justify: "两端对齐",
 };
 
+const SCOPE_LABELS: Record<string, string> = {
+  global: "全文普通内容",
+  body: "正文",
+  abstract: "摘要",
+  heading: "标题",
+  reference: "参考文献",
+};
+
+const UNSUPPORTED_MODULE_LABELS: Record<string, string> = {
+  header_footer: "页眉页脚",
+  page_number: "页码",
+  footnote: "脚注",
+  endnote: "尾注",
+  table_three_line: "三线表",
+  formula: "公式",
+  figure_caption: "图题",
+  table_caption: "表题",
+};
+
 const FIELD_LABELS: Record<string, string> = {
   font: "字体",
   color: "颜色",
@@ -74,11 +109,20 @@ const FIELD_LABELS: Record<string, string> = {
   size_pt: "字号",
   bold: "加粗",
   italic: "斜体",
+  underline: "下划线",
   alignment: "对齐方式",
   line_spacing: "行距",
   first_line_indent_pt: "首行缩进",
+  first_line_indent_chars: "首行缩进",
+  hanging_indent_chars: "悬挂缩进",
   space_before_pt: "段前",
   space_after_pt: "段后",
+  space_before_lines: "段前",
+  space_after_lines: "段后",
+  scope: "作用范围",
+  action: "处理方式",
+  status: "状态",
+  note: "说明",
 };
 
 export function summarizeOverrideRules(override: unknown): {
@@ -118,6 +162,38 @@ export function summarizeOverrideRules(override: unknown): {
       description: describeLatinDigitFormat(rules.latin_digit_format),
       fields: describeLatinDigitFormatFields(rules.latin_digit_format),
     });
+  }
+
+  if (isPlainObject(rules.reference_latin_digit_format)) {
+    items.push({
+      type: "reference_latin_digit_format",
+      label: "参考文献英文和数字",
+      description: describeLatinDigitFormat(rules.reference_latin_digit_format),
+      fields: describeLatinDigitFormatFields(rules.reference_latin_digit_format),
+    });
+  }
+
+  if (isPlainObject(rules.toc)) {
+    items.push({
+      type: "toc",
+      label: "目录",
+      description: rules.toc.action === "protect" ? "保护，不生成，不更新" : "已识别目录要求",
+      fields: describeGenericFields(rules.toc),
+    });
+  }
+
+  if (isPlainObject(rules.unsupported_modules)) {
+    for (const [moduleKey, moduleConfig] of Object.entries(rules.unsupported_modules)) {
+      if (!isPlainObject(moduleConfig)) {
+        continue;
+      }
+      items.push({
+        type: `unsupported_modules.${moduleKey}`,
+        label: UNSUPPORTED_MODULE_LABELS[moduleKey] || moduleKey,
+        description: describeUnsupportedModule(moduleConfig),
+        fields: describeGenericFields(moduleConfig),
+      });
+    }
   }
 
   if (isPlainObject(rules.page)) {
@@ -184,18 +260,31 @@ export function collectOverrideFields(override: unknown): string[] {
     }
   }
 
-  if (isPlainObject(rules.latin_digit_format)) {
-    for (const field of Object.keys(rules.latin_digit_format)) {
-      if (field.startsWith("_")) {
+  collectCharacterFormatFields(rules.latin_digit_format, "latin_digit_format", fields);
+  collectCharacterFormatFields(
+    rules.reference_latin_digit_format,
+    "reference_latin_digit_format",
+    fields,
+  );
+
+  if (isPlainObject(rules.toc)) {
+    for (const field of Object.keys(rules.toc)) {
+      if (!field.startsWith("_")) {
+        fields.push(`toc.${field}`);
+      }
+    }
+  }
+
+  if (isPlainObject(rules.unsupported_modules)) {
+    for (const [moduleKey, moduleConfig] of Object.entries(rules.unsupported_modules)) {
+      if (!isPlainObject(moduleConfig)) {
         continue;
       }
-      if (field === "size_cn") {
-        if (!Object.prototype.hasOwnProperty.call(rules.latin_digit_format, "size_pt")) {
-          fields.push("latin_digit_format.size_pt");
+      for (const field of Object.keys(moduleConfig)) {
+        if (!field.startsWith("_")) {
+          fields.push(`unsupported_modules.${moduleKey}.${field}`);
         }
-        continue;
       }
-      fields.push(`latin_digit_format.${field}`);
     }
   }
 
@@ -203,12 +292,12 @@ export function collectOverrideFields(override: unknown): string[] {
 }
 
 export function getFinalRulesPreview(finalRules: unknown) {
-  if (!isPlainObject(finalRules) || !isPlainObject(finalRules.styles)) {
+  if (!isPlainObject(finalRules)) {
     return {};
   }
 
   const preview: Record<string, unknown> = {};
-  const styles = finalRules.styles as Record<string, unknown>;
+  const styles = isPlainObject(finalRules.styles) ? finalRules.styles : {};
   for (const styleName of STYLE_ORDER) {
     if (styles[styleName]) {
       preview[styleName] = styles[styleName];
@@ -221,8 +310,39 @@ export function getFinalRulesPreview(finalRules: unknown) {
   if (isPlainObject(finalRules.latin_digit_format)) {
     preview.latin_digit_format = finalRules.latin_digit_format;
   }
+  if (isPlainObject(finalRules.reference_latin_digit_format)) {
+    preview.reference_latin_digit_format = finalRules.reference_latin_digit_format;
+  }
+  if (isPlainObject(finalRules.toc)) {
+    preview.toc = finalRules.toc;
+  }
+  if (isPlainObject(finalRules.unsupported_modules)) {
+    preview.unsupported_modules = finalRules.unsupported_modules;
+  }
 
   return preview;
+}
+
+function collectCharacterFormatFields(
+  format: unknown,
+  prefix: string,
+  fields: string[],
+) {
+  if (!isPlainObject(format)) {
+    return;
+  }
+  for (const field of Object.keys(format)) {
+    if (field.startsWith("_")) {
+      continue;
+    }
+    if (field === "size_cn") {
+      if (!Object.prototype.hasOwnProperty.call(format, "size_pt")) {
+        fields.push(`${prefix}.size_pt`);
+      }
+      continue;
+    }
+    fields.push(`${prefix}.${field}`);
+  }
 }
 
 function describeLatinDigitFormat(format: Record<string, unknown>) {
@@ -233,7 +353,7 @@ function describeLatinDigitFormat(format: Record<string, unknown>) {
       : typeof format.size_pt === "number"
         ? `${format.size_pt} 磅`
         : "",
-    format.scope === "body" ? "仅正文" : "全文普通内容",
+    typeof format.scope === "string" ? SCOPE_LABELS[format.scope] || format.scope : "",
   ].filter(Boolean);
   return parts.length > 0 ? parts.join("，") : "已识别英文/数字字符格式";
 }
@@ -247,14 +367,16 @@ function describeLatinDigitFormatFields(format: Record<string, unknown>) {
       }
       return {
         key,
-        label:
-          key === "scope"
-            ? "作用范围"
-            : FIELD_LABELS[key] || key,
-        value: key === "scope" && value === "body" ? "正文" : formatFieldValue(key, value),
+        label: FIELD_LABELS[key] || key,
+        value: formatFieldValue(key, value),
       };
     })
     .filter((item): item is RuleFieldItem => item !== null && item.value !== "");
+}
+
+function describeUnsupportedModule(moduleConfig: Record<string, unknown>) {
+  const note = typeof moduleConfig.note === "string" ? moduleConfig.note : "";
+  return note || "检测到但当前版本暂不支持，仅提醒";
 }
 
 function describeStyle(style: Record<string, unknown>) {
@@ -266,11 +388,13 @@ function describeStyle(style: Record<string, unknown>) {
         ? `${style.size_pt} 磅`
         : "",
     style.bold === true ? "加粗" : "",
+    style.bold === false ? "不加粗" : "",
     style.italic === true ? "斜体" : "",
     formatAlignment(style.alignment),
     formatColor(style.color),
     formatLineSpacing(style.line_spacing),
-    formatIndent(style.first_line_indent_pt),
+    formatIndent(style.first_line_indent_chars, "chars"),
+    formatIndent(style.first_line_indent_pt, "pt"),
     formatNumberField(style.space_before_pt, "段前", "磅"),
     formatNumberField(style.space_after_pt, "段后", "磅"),
   ].filter(Boolean);
@@ -296,6 +420,17 @@ function describeStyleFields(style: Record<string, unknown>) {
       (item): item is RuleFieldItem =>
         item !== null && item.value !== "",
     );
+}
+
+function describeGenericFields(config: Record<string, unknown>) {
+  return Object.entries(config)
+    .filter(([key]) => !key.startsWith("_"))
+    .map(([key, value]) => ({
+      key,
+      label: FIELD_LABELS[key] || key,
+      value: formatFieldValue(key, value),
+    }))
+    .filter((item): item is RuleFieldItem => item.value !== "");
 }
 
 function describePageFields(page: Record<string, unknown>) {
@@ -326,7 +461,16 @@ function formatFieldValue(key: string, value: unknown) {
     return formatLineSpacing(value);
   }
   if (key === "first_line_indent_pt") {
-    return formatIndent(value);
+    return formatIndent(value, "pt");
+  }
+  if (key === "first_line_indent_chars") {
+    return formatIndent(value, "chars");
+  }
+  if (key === "hanging_indent_chars") {
+    return formatHangingIndent(value);
+  }
+  if (key === "space_before_lines" || key === "space_after_lines") {
+    return typeof value === "number" ? `${value} 行` : "";
   }
   if (key === "space_before_pt") {
     return typeof value === "number" ? `${value} 磅` : String(value);
@@ -334,7 +478,7 @@ function formatFieldValue(key: string, value: unknown) {
   if (key === "space_after_pt") {
     return typeof value === "number" ? `${value} 磅` : String(value);
   }
-  if (key === "bold" || key === "italic") {
+  if (key === "bold" || key === "italic" || key === "underline") {
     return value === true ? "是" : value === false ? "否" : String(value);
   }
   if (key === "color") {
@@ -342,6 +486,18 @@ function formatFieldValue(key: string, value: unknown) {
   }
   if (key === "size_pt") {
     return typeof value === "number" ? `${value} 磅` : String(value);
+  }
+  if (key === "scope") {
+    return typeof value === "string" ? SCOPE_LABELS[value] || value : "";
+  }
+  if (key === "action" && value === "protect") {
+    return "保护";
+  }
+  if (key === "status" && value === "detected_but_not_supported") {
+    return "检测到但暂不支持";
+  }
+  if (key === "note") {
+    return typeof value === "string" ? value : "";
   }
   return typeof value === "string" || typeof value === "number" ? String(value) : "";
 }
@@ -370,15 +526,22 @@ function formatColor(value: unknown) {
   return `#${value}`;
 }
 
-function formatIndent(value: unknown) {
+function formatIndent(value: unknown, unit: "pt" | "chars") {
   if (typeof value === "number") {
     if (value === 0) {
       return "不缩进";
     }
-    return `首行缩进 ${value} 磅`;
+    return unit === "chars" ? `首行缩进 ${value} 字符` : `首行缩进 ${value} 磅`;
   }
   if (typeof value === "string") {
     return `首行缩进 ${value}`;
+  }
+  return "";
+}
+
+function formatHangingIndent(value: unknown) {
+  if (typeof value === "number") {
+    return `悬挂缩进 ${value} 字符`;
   }
   return "";
 }

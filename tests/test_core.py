@@ -207,9 +207,11 @@ class CoreTests(unittest.TestCase):
         module_status = report["module_status"]
 
         self.assertEqual(module_status["abstract_en"]["status"], "detected")
-        self.assertEqual(module_status["abstract_en"]["count"], 1)
+        self.assertEqual(module_status["abstract_en"]["count"], 2)
+        self.assertEqual(module_status["abstract_en"]["action"], "formatted")
         self.assertEqual(module_status["keywords_en"]["status"], "detected")
         self.assertEqual(module_status["keywords_en"]["count"], 1)
+        self.assertEqual(module_status["keywords_en"]["action"], "formatted")
 
     def test_module_status_detects_and_protects_toc_entries(self):
         report = self.format_paragraphs_for_report(
@@ -352,6 +354,79 @@ class CoreTests(unittest.TestCase):
             "formatted",
         )
 
+    def test_module_status_uses_actual_execution_counts(self):
+        report = self.format_paragraphs_for_report(
+            [
+                "测试论文标题",
+                "Abstract",
+                "This paragraph is an English abstract.",
+                "Keywords: Clinical nursing; Recovery",
+                "参考文献",
+                "[1] Xiaofeng L. 护理研究[J]. Medicine, 2025, 104(37): e44505.",
+            ],
+            override={
+                "name": "module_status_execution",
+                "styles": {
+                    "abstract_en_title": {"font": "Times New Roman", "size_cn": "小四"},
+                    "abstract_en_content": {"font": "Times New Roman", "size_cn": "小四"},
+                    "keywords_en": {"font": "Times New Roman", "size_cn": "小四"},
+                    "keywords_en_label": {
+                        "font": "Times New Roman",
+                        "size_cn": "小四",
+                        "bold": True,
+                    },
+                    "keywords_en_content": {
+                        "font": "Times New Roman",
+                        "size_cn": "小四",
+                        "bold": False,
+                    },
+                    "reference_item": {
+                        "font": "宋体",
+                        "size_cn": "五号",
+                        "hanging_indent_chars": 2,
+                    },
+                },
+                "reference_latin_digit_format": {
+                    "font": "Times New Roman",
+                    "size_cn": "五号",
+                    "scope": "reference",
+                },
+                "unsupported_modules": {
+                    "header_footer": {
+                        "status": "detected_but_not_supported",
+                        "action": "warning_only",
+                        "note": "检测到页眉页脚要求，但当前版本暂不处理。",
+                    },
+                    "page_number": {
+                        "status": "detected_but_not_supported",
+                        "action": "warning_only",
+                        "note": "检测到页码要求，但当前版本暂不处理。",
+                    },
+                },
+            },
+        )
+        module_status = report["module_status"]
+
+        self.assertEqual(module_status["abstract_en"]["action"], "formatted")
+        self.assertEqual(module_status["keywords_en"]["action"], "formatted")
+        self.assertEqual(module_status["reference"]["action"], "formatted")
+        self.assertEqual(module_status["reference_latin_digit_format"]["action"], "formatted")
+        self.assertEqual(module_status["header_footer"]["action"], "warning_only")
+        self.assertEqual(module_status["page_number"]["action"], "warning_only")
+        debug_summary = report["final_rules_debug"]["debug_summary"]
+        self.assertGreater(
+            debug_summary["keyword_label_content"]["keywords_en_label_count"],
+            0,
+        )
+        self.assertGreater(
+            debug_summary["reference_execution"]["reference_latin_digit_format_count"],
+            0,
+        )
+        self.assertGreater(
+            debug_summary["reference_execution"]["reference_hanging_indent_count"],
+            0,
+        )
+
     def test_normalize_font_size_xiaosi(self):
         self.assertEqual(format_docx.normalize_font_size("小四"), 12)
 
@@ -372,6 +447,47 @@ class CoreTests(unittest.TestCase):
 
     def test_normalize_indent_two_characters(self):
         self.assertEqual(format_docx.normalize_indent("2字符"), 24)
+
+    def test_first_line_indent_chars_and_points_are_normalized(self):
+        normalized = format_docx.normalize_format_rules(
+            {
+                "styles": {
+                    "body": {
+                        "font": "宋体",
+                        "size_cn": "小四",
+                        "first_line_indent_chars": 2,
+                        "first_line_indent_pt": 24,
+                    },
+                    "reference_item": {
+                        "font": "宋体",
+                        "size_cn": "五号",
+                        "first_line_indent_chars": 2,
+                        "first_line_indent_pt": 12,
+                    },
+                }
+            },
+            fill_defaults=False,
+        )
+
+        self.assertEqual(normalized["styles"]["body"]["first_line_indent_pt"], 24)
+        body_summary = [
+            item
+            for item in normalized["_indent_normalization"]
+            if item["style"] == "body"
+        ][0]
+        self.assertEqual(body_summary["status"], "equivalent")
+        self.assertFalse(
+            any(
+                "styles.body.first_line_indent" in warning
+                for warning in normalized["_template_warnings"]
+            )
+        )
+        self.assertTrue(
+            any(
+                "styles.reference_item.first_line_indent_chars" in warning
+                for warning in normalized["_template_warnings"]
+            )
+        )
 
     def test_normalize_page_margin_cm_string(self):
         self.assertEqual(format_docx.normalize_page_margin("3cm"), 3)
@@ -428,6 +544,58 @@ class CoreTests(unittest.TestCase):
         }
         errors, _ = format_docx.validate_format_rules(template)
         self.assertEqual(errors, [])
+
+    def test_validate_format_rules_accepts_v04_parse_fields(self):
+        template = {
+            "version": "1.0",
+            "name": "test",
+            "page": {},
+            "styles": {
+                "body": {"font": "宋体"},
+                "abstract_cn_title": {"font": "黑体", "bold": True},
+                "abstract_cn_content": {
+                    "font": "宋体",
+                    "first_line_indent_chars": 2,
+                },
+                "keywords_cn_label": {"font": "黑体", "bold": True},
+                "keywords_cn_content": {"font": "宋体", "bold": False},
+                "keywords_en_label": {"font": "Times New Roman", "bold": True},
+                "keywords_en_content": {"font": "Times New Roman", "bold": False},
+            },
+            "latin_digit_format": {
+                "font": "Times New Roman",
+                "scope": "heading",
+            },
+            "reference_latin_digit_format": {
+                "font": "Times New Roman",
+                "size_cn": "五号",
+                "scope": "reference",
+            },
+            "toc": {"action": "protect"},
+            "unsupported_modules": {
+                "header_footer": {
+                    "status": "detected_but_not_supported",
+                    "action": "warning_only",
+                    "note": "检测到页眉页脚要求，但当前版本暂不处理。",
+                },
+                "page_number": {
+                    "status": "detected_but_not_supported",
+                    "action": "warning_only",
+                    "note": "检测到页码要求，但当前版本暂不处理。",
+                },
+            },
+        }
+        normalized = format_docx.normalize_format_rules(template)
+        errors, _ = format_docx.validate_format_rules(normalized)
+        self.assertEqual(errors, [])
+        self.assertEqual(
+            normalized["reference_latin_digit_format"]["size_pt"],
+            10.5,
+        )
+        self.assertEqual(
+            normalized["styles"]["abstract_cn_content"]["first_line_indent_pt"],
+            24,
+        )
 
     def test_validate_format_rules_rejects_bad_keep_with_next(self):
         template = {
@@ -618,6 +786,224 @@ class CoreTests(unittest.TestCase):
         self.assertTrue(has_direct_numbering(heading_2))
         self.assertTrue(has_direct_numbering(heading_3))
 
+    def test_numbered_heading_level_3_overrides_heading_2_style(self):
+        doc = Document()
+        doc.add_paragraph("论文标题")
+        paragraph = doc.add_paragraph("1.1.1 财务透明度的概念与发展", style="Heading 2")
+        original_text = paragraph.text
+        template = {
+            "styles": {
+                "paper_title": {"font": "宋体", "size_pt": 12},
+                "body": {"font": "宋体", "size_pt": 12},
+                "heading_1": {
+                    "font": "黑体",
+                    "size_pt": 15,
+                    "bold": True,
+                    "space_before_pt": 12,
+                    "space_before_lines": 0.5,
+                    "space_after_lines": 0.5,
+                },
+                "heading_2": {"font": "黑体", "size_pt": 14, "bold": True},
+                "heading_3": {"font": "黑体", "size_pt": 12, "bold": True},
+            },
+            "_runtime": {"fallback_count": 0, "warned_missing_styles": set()},
+        }
+        report = {"paragraphs": [], "warnings": []}
+
+        context = format_docx.format_normal_paragraphs(doc, template, report)
+
+        self.assertEqual(paragraph.text, original_text)
+        self.assertEqual(report["paragraphs"][1]["detected_type"], "heading_3")
+        self.assertEqual(paragraph.style.name, "Heading 3")
+        self.assertAlmostEqual(paragraph.runs[0].font.size.pt, 12)
+        self.assertTrue(paragraph.runs[0].bold)
+        self.assertEqual(context["heading_style_conflicts"][0]["final_level"], "heading_3")
+
+    def test_numbered_heading_level_2_overrides_wrong_heading_1_style_and_keeps_numpr(self):
+        doc = Document()
+        doc.add_paragraph("论文标题")
+        paragraph = doc.add_paragraph("3.1 中小企业融资困难", style="Heading 1")
+        add_direct_numbering(paragraph)
+        original_text = paragraph.text
+        template = {
+            "styles": {
+                "paper_title": {"font": "宋体", "size_pt": 12},
+                "body": {"font": "宋体", "size_pt": 12},
+                "heading_1": {
+                    "font": "黑体",
+                    "size_pt": 15,
+                    "bold": True,
+                    "space_before_pt": 12,
+                    "space_before_lines": 0.5,
+                    "space_after_lines": 0.5,
+                },
+                "heading_2": {"font": "黑体", "size_pt": 14, "bold": True},
+                "heading_3": {"font": "黑体", "size_pt": 12, "bold": True},
+            },
+            "_runtime": {"fallback_count": 0, "warned_missing_styles": set()},
+        }
+        report = {"paragraphs": [], "warnings": []}
+
+        context = format_docx.format_normal_paragraphs(doc, template, report)
+
+        self.assertEqual(paragraph.text, original_text)
+        self.assertEqual(report["paragraphs"][1]["detected_type"], "heading_2")
+        self.assertEqual(paragraph.style.name, "Heading 2")
+        self.assertAlmostEqual(paragraph.runs[0].font.size.pt, 14)
+        self.assertTrue(has_direct_numbering(paragraph))
+        self.assertEqual(context["heading_style_conflicts"][0]["original_style_level"], "heading_1")
+        self.assertEqual(context["heading_style_conflicts"][0]["final_level"], "heading_2")
+        self.assertTrue(any("标题层级冲突" in item["message"] for item in report["warnings"]))
+
+    def test_chinese_numbered_heading_from_normal_syncs_to_heading_1(self):
+        doc = Document()
+        doc.add_paragraph("论文标题")
+        paragraph = doc.add_paragraph("四、提高财务透明度降低中小企业融资成本的对策")
+        original_text = paragraph.text
+        template = {
+            "styles": {
+                "paper_title": {"font": "宋体", "size_pt": 12},
+                "body": {"font": "宋体", "size_pt": 12},
+                "heading_1": {
+                    "font": "黑体",
+                    "size_pt": 15,
+                    "bold": True,
+                    "space_before_pt": 12,
+                    "space_before_lines": 0.5,
+                    "space_after_lines": 0.5,
+                },
+                "heading_2": {"font": "黑体", "size_pt": 14, "bold": True},
+                "heading_3": {"font": "黑体", "size_pt": 12, "bold": True},
+            },
+            "_runtime": {"fallback_count": 0, "warned_missing_styles": set()},
+        }
+        report = {"paragraphs": [], "warnings": []}
+
+        format_docx.format_normal_paragraphs(doc, template, report)
+
+        self.assertEqual(paragraph.text, original_text)
+        self.assertEqual(report["paragraphs"][1]["detected_type"], "heading_1")
+        self.assertEqual(paragraph.style.name, "Heading 1")
+        self.assertAlmostEqual(paragraph.runs[0].font.size.pt, 15)
+        self.assertTrue(paragraph.runs[0].bold)
+        self.assertAlmostEqual(paragraph.paragraph_format.space_before.pt, 7.5)
+        self.assertAlmostEqual(paragraph.paragraph_format.space_after.pt, 7.5)
+
+    def test_arabic_level_1_headings_are_detected_in_numeric_heading_system(self):
+        doc = Document()
+        doc.add_paragraph("论文标题")
+        h1_plain = doc.add_paragraph("1 绪论")
+        h2 = doc.add_paragraph("1.1 研究背景")
+        h3 = doc.add_paragraph("1.1.1 研究目的")
+        body_list = doc.add_paragraph("1. 加强财务信息披露")
+        h1_dot = doc.add_paragraph("2. 相关理论")
+        h2_second = doc.add_paragraph("2.1 理论基础")
+        h1_comma = doc.add_paragraph("3、研究方法")
+        h2_third = doc.add_paragraph("3.1 样本来源")
+        template = {
+            "styles": {
+                "paper_title": {"font": "宋体", "size_pt": 12},
+                "body": {"font": "宋体", "size_pt": 12},
+                "heading_1": {"font": "黑体", "size_pt": 15, "bold": True},
+                "heading_2": {"font": "黑体", "size_pt": 14, "bold": True},
+                "heading_3": {"font": "黑体", "size_pt": 12, "bold": True},
+            },
+            "_runtime": {"fallback_count": 0, "warned_missing_styles": set()},
+        }
+        report = {"paragraphs": [], "warnings": []}
+
+        context = format_docx.format_normal_paragraphs(doc, template, report)
+        detected_types = [item["detected_type"] for item in report["paragraphs"]]
+
+        self.assertTrue(context["heading_numbering_system"]["arabic_heading_system"])
+        self.assertEqual(detected_types[1], "heading_1")
+        self.assertEqual(detected_types[2], "heading_2")
+        self.assertEqual(detected_types[3], "heading_3")
+        self.assertEqual(detected_types[4], "body")
+        self.assertEqual(detected_types[5], "heading_1")
+        self.assertEqual(detected_types[6], "heading_2")
+        self.assertEqual(detected_types[7], "heading_1")
+        self.assertEqual(detected_types[8], "heading_2")
+        self.assertEqual(body_list.style.name, "Normal")
+        for paragraph in (h1_plain, h1_dot, h1_comma):
+            self.assertEqual(paragraph.style.name, "Heading 1")
+            self.assertAlmostEqual(paragraph.runs[0].font.size.pt, 15)
+        self.assertEqual(h2.style.name, "Heading 2")
+        self.assertEqual(h2_second.style.name, "Heading 2")
+        self.assertEqual(h2_third.style.name, "Heading 2")
+        self.assertEqual(h3.style.name, "Heading 3")
+
+    def test_chapter_heading_forms_are_level_1_without_numeric_subheadings(self):
+        doc = Document()
+        doc.add_paragraph("论文标题")
+        chapter_digit = doc.add_paragraph("第1章 绪论")
+        chapter_chinese = doc.add_paragraph("第一章 研究背景")
+        body_sentence = doc.add_paragraph("第一章为绪论。本章主要介绍研究背景和研究意义。")
+        template = {
+            "styles": {
+                "paper_title": {"font": "宋体", "size_pt": 12},
+                "body": {"font": "宋体", "size_pt": 12},
+                "heading_1": {"font": "黑体", "size_pt": 15, "bold": True},
+                "heading_2": {"font": "黑体", "size_pt": 14, "bold": True},
+                "heading_3": {"font": "黑体", "size_pt": 12, "bold": True},
+            },
+            "_runtime": {"fallback_count": 0, "warned_missing_styles": set()},
+        }
+        report = {"paragraphs": [], "warnings": []}
+
+        format_docx.format_normal_paragraphs(doc, template, report)
+        detected_types = [item["detected_type"] for item in report["paragraphs"]]
+
+        self.assertEqual(detected_types[1], "heading_1")
+        self.assertEqual(detected_types[2], "heading_1")
+        self.assertEqual(detected_types[3], "body")
+        self.assertEqual(chapter_digit.style.name, "Heading 1")
+        self.assertEqual(chapter_chinese.style.name, "Heading 1")
+        self.assertEqual(body_sentence.text, "第一章为绪论。本章主要介绍研究背景和研究意义。")
+
+    def test_single_arabic_numbered_body_item_is_not_forced_to_heading_1(self):
+        doc = Document()
+        doc.add_paragraph("论文标题")
+        body = doc.add_paragraph("这是一段正文说明。")
+        item = doc.add_paragraph("1. 加强财务信息披露")
+        template = {
+            "styles": {
+                "paper_title": {"font": "宋体", "size_pt": 12},
+                "body": {"font": "宋体", "size_pt": 12},
+                "heading_1": {"font": "黑体", "size_pt": 15, "bold": True},
+                "heading_2": {"font": "黑体", "size_pt": 14, "bold": True},
+                "heading_3": {"font": "黑体", "size_pt": 12, "bold": True},
+            },
+            "_runtime": {"fallback_count": 0, "warned_missing_styles": set()},
+        }
+        report = {"paragraphs": [], "warnings": []}
+
+        context = format_docx.format_normal_paragraphs(doc, template, report)
+        detected_types = [item["detected_type"] for item in report["paragraphs"]]
+
+        self.assertEqual(body.text, "这是一段正文说明。")
+        self.assertEqual(item.text, "1. 加强财务信息披露")
+        self.assertEqual(detected_types[2], "body")
+        self.assertEqual(item.style.name, "Normal")
+        self.assertFalse(context["heading_numbering_system"]["arabic_heading_system"])
+        self.assertTrue(context["arabic_heading_level1_skipped"])
+
+    def test_toc_entries_are_not_reclassified_as_numbered_headings(self):
+        report = self.format_paragraphs_for_report(
+            [
+                "论文标题",
+                "目录",
+                "1.1.1 财务透明度的概念与发展   3",
+                "1.1.1 财务透明度的概念与发展",
+            ]
+        )
+        detected_types = [item["detected_type"] for item in report["paragraphs"]]
+
+        self.assertEqual(detected_types[1], "body")
+        self.assertEqual(detected_types[2], "body")
+        self.assertEqual(detected_types[3], "heading_3")
+        self.assertEqual(report["module_status"]["toc"]["action"], "protected")
+
     def test_latin_digit_format_splits_mixed_body_run_without_changing_text(self):
         doc = Document()
         doc.add_paragraph("论文标题")
@@ -712,6 +1098,152 @@ class CoreTests(unittest.TestCase):
         self.assertNotEqual(get_run_font_mapping(toc_entry.runs[0], "ascii"), "Times New Roman")
         self.assertGreater(context["module_counts"].get("toc", 0), 0)
         self.assertEqual(context["module_counts"].get("latin_digit_format", 0), 0)
+
+    def test_keywords_cn_label_content_run_formatting(self):
+        doc = Document()
+        doc.add_paragraph("论文标题")
+        paragraph = doc.add_paragraph("关键词：临床护理干预；术后恢复；心理护理")
+        original_text = paragraph.text
+        template = {
+            "styles": {
+                "paper_title": {"font": "黑体", "size_pt": 15},
+                "body": {"font": "宋体", "size_pt": 12},
+                "keywords": {"font": "宋体", "size_pt": 12, "bold": False},
+                "keywords_cn_label": {"font": "黑体", "size_pt": 12, "bold": True},
+                "keywords_cn_content": {"font": "宋体", "size_pt": 12, "bold": False},
+            },
+            "_runtime": {"fallback_count": 0, "warned_missing_styles": set()},
+        }
+        report = {"paragraphs": [], "warnings": []}
+
+        context = format_docx.format_normal_paragraphs(doc, template, report)
+
+        self.assertEqual(paragraph.text, original_text)
+        self.assertEqual(paragraph.runs[0].text, "关键词：")
+        self.assertEqual(get_run_font_mapping(paragraph.runs[0], "eastAsia"), "黑体")
+        self.assertTrue(paragraph.runs[0].bold)
+        content_text = "".join(run.text for run in paragraph.runs[1:])
+        self.assertEqual(content_text, "临床护理干预；术后恢复；心理护理")
+        for run in paragraph.runs[1:]:
+            self.assertEqual(get_run_font_mapping(run, "eastAsia"), "宋体")
+            self.assertFalse(run.bold)
+        self.assertEqual(context["module_counts"].get("keywords_cn_label_count"), 1)
+        self.assertEqual(context["module_counts"].get("keywords_cn_content_count"), 1)
+
+    def test_keywords_en_label_content_run_formatting(self):
+        doc = Document()
+        doc.add_paragraph("论文标题")
+        paragraph = doc.add_paragraph(
+            "Keywords: Clinical nursing intervention; Postoperative recovery"
+        )
+        original_text = paragraph.text
+        template = {
+            "styles": {
+                "paper_title": {"font": "黑体", "size_pt": 15},
+                "body": {"font": "宋体", "size_pt": 12},
+                "keywords": {"font": "宋体", "size_pt": 12, "bold": False},
+                "keywords_en": {"font": "Times New Roman", "size_pt": 12},
+                "keywords_en_label": {
+                    "font": "Times New Roman",
+                    "size_pt": 12,
+                    "bold": True,
+                },
+                "keywords_en_content": {
+                    "font": "Times New Roman",
+                    "size_pt": 12,
+                    "bold": False,
+                },
+            },
+            "_runtime": {"fallback_count": 0, "warned_missing_styles": set()},
+        }
+        report = {"paragraphs": [], "warnings": []}
+
+        context = format_docx.format_normal_paragraphs(doc, template, report)
+
+        self.assertEqual(paragraph.text, original_text)
+        self.assertEqual(paragraph.runs[0].text, "Keywords:")
+        self.assertEqual(get_run_font_mapping(paragraph.runs[0], "ascii"), "Times New Roman")
+        self.assertTrue(paragraph.runs[0].bold)
+        content_text = "".join(run.text for run in paragraph.runs[1:])
+        self.assertEqual(content_text, " Clinical nursing intervention; Postoperative recovery")
+        for run in paragraph.runs[1:]:
+            self.assertEqual(get_run_font_mapping(run, "ascii"), "Times New Roman")
+            self.assertFalse(run.bold)
+        self.assertEqual(context["module_counts"].get("keywords_en_label_count"), 1)
+        self.assertEqual(context["module_counts"].get("keywords_en_content_count"), 1)
+
+    def test_reference_latin_digit_format_applies_to_reference_items(self):
+        doc = Document()
+        doc.add_paragraph("论文标题")
+        doc.add_paragraph("参考文献")
+        paragraph = doc.add_paragraph(
+            "[9] Xiaofeng L, Cai T, Yi Z, et al. 护理研究[J]. Medicine, 2025, 104(37): e44505."
+        )
+        original_text = paragraph.text
+        template = {
+            "styles": {
+                "paper_title": {"font": "黑体", "size_pt": 15},
+                "body": {"font": "宋体", "size_pt": 12},
+                "reference_title": {"font": "黑体", "size_pt": 14},
+                "reference_item": {"font": "宋体", "size_pt": 10.5},
+            },
+            "reference_latin_digit_format": {
+                "font": "Times New Roman",
+                "size_pt": 10.5,
+                "scope": "reference",
+            },
+            "_runtime": {"fallback_count": 0, "warned_missing_styles": set()},
+        }
+        report = {"paragraphs": [], "warnings": []}
+
+        context = format_docx.format_normal_paragraphs(doc, template, report)
+
+        self.assertEqual(paragraph.text, original_text)
+        latin_runs = [
+            run
+            for run in paragraph.runs
+            if format_docx.REFERENCE_LATIN_DIGIT_TEXT_PATTERN.search(run.text)
+        ]
+        self.assertGreater(len(latin_runs), 0)
+        for run in latin_runs:
+            self.assertEqual(get_run_font_mapping(run, "ascii"), "Times New Roman")
+            self.assertEqual(get_run_font_mapping(run, "hAnsi"), "Times New Roman")
+            self.assertAlmostEqual(run.font.size.pt, 10.5)
+        chinese_runs = [run for run in paragraph.runs if "护理研究" in run.text]
+        self.assertEqual(len(chinese_runs), 1)
+        self.assertEqual(get_run_font_mapping(chinese_runs[0], "eastAsia"), "宋体")
+        self.assertGreater(context["module_counts"].get("reference_latin_digit_format", 0), 0)
+
+    def test_reference_hanging_indent_applies_only_to_items(self):
+        doc = Document()
+        doc.add_paragraph("论文标题")
+        title = doc.add_paragraph("参考文献")
+        first_item = doc.add_paragraph("[1] 张三. 测试文献. 2024.")
+        second_item = doc.add_paragraph("[2] 李四. 另一篇文献. 2025.")
+        template = {
+            "styles": {
+                "paper_title": {"font": "黑体", "size_pt": 15},
+                "body": {"font": "宋体", "size_pt": 12},
+                "reference_title": {"font": "黑体", "size_pt": 14},
+                "reference_item": {
+                    "font": "宋体",
+                    "size_pt": 10.5,
+                    "hanging_indent_chars": 2,
+                },
+            },
+            "_runtime": {"fallback_count": 0, "warned_missing_styles": set()},
+        }
+        report = {"paragraphs": [], "warnings": []}
+
+        context = format_docx.format_normal_paragraphs(doc, template, report)
+
+        self.assertEqual(first_item.text, "[1] 张三. 测试文献. 2024.")
+        self.assertEqual(second_item.text, "[2] 李四. 另一篇文献. 2025.")
+        self.assertNotAlmostEqual(title.paragraph_format.first_line_indent.pt, -21)
+        for item in (first_item, second_item):
+            self.assertAlmostEqual(item.paragraph_format.left_indent.pt, 21)
+            self.assertAlmostEqual(item.paragraph_format.first_line_indent.pt, -21)
+        self.assertEqual(context["module_counts"].get("reference_hanging_indent"), 2)
 
     def test_format_document_preserves_paragraph_text_order(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1197,6 +1729,54 @@ class CoreTests(unittest.TestCase):
         self.assertIn("styles.body.font", metadata["overridden_fields"])
         self.assertIn("styles.body.size_pt", metadata["overridden_fields"])
         self.assertIn("styles.heading_1.alignment", metadata["overridden_fields"])
+
+    def test_merge_format_rules_preserves_v04_parse_metadata(self):
+        base = format_docx.load_template("default")
+        override = format_docx.normalize_override_rules(
+            {
+                "name": "v04_parse",
+                "styles": {
+                    "abstract_cn_title": {
+                        "font": "黑体",
+                        "size_cn": "小四",
+                    },
+                    "reference_item": {
+                        "font": "宋体",
+                        "size_cn": "五号",
+                    },
+                },
+                "reference_latin_digit_format": {
+                    "font": "Times New Roman",
+                    "size_cn": "五号",
+                    "scope": "reference",
+                },
+                "toc": {"action": "protect"},
+                "unsupported_modules": {
+                    "page_number": {
+                        "status": "detected_but_not_supported",
+                        "action": "warning_only",
+                        "note": "检测到页码要求，但当前版本暂不处理。",
+                    }
+                },
+                "parser_metadata": {
+                    "parser_mode": "kimi",
+                    "raw_ai_rules": {"name": "raw"},
+                    "validated_rules": {"name": "validated"},
+                    "conflict_result": {"hasConflicts": False},
+                },
+            }
+        )
+
+        merged, metadata = format_docx.merge_format_rules(base, override)
+        self.assertEqual(merged["reference_latin_digit_format"]["font"], "Times New Roman")
+        self.assertEqual(merged["reference_latin_digit_format"]["size_pt"], 10.5)
+        self.assertEqual(merged["toc"]["action"], "protect")
+        self.assertIn("page_number", merged["unsupported_modules"])
+        self.assertEqual(merged["parser_metadata"]["parser_mode"], "kimi")
+        self.assertIn("reference_latin_digit_format.font", metadata["overridden_fields"])
+        debug_summary = format_docx.build_debug_summary(merged)
+        self.assertEqual(debug_summary["parser_mode"], "kimi")
+        self.assertIn("unsupported_modules", debug_summary)
 
     def test_load_template_default(self):
         template = format_docx.load_template("default")

@@ -34,13 +34,22 @@
       "required": ["body"],
       "properties": {
         "paper_title": { "$ref": "#/$defs/style" },
+        "abstract_cn_title": { "$ref": "#/$defs/style" },
+        "abstract_cn_content": { "$ref": "#/$defs/style" },
+        "keywords_cn_label": { "$ref": "#/$defs/style" },
+        "keywords_cn_content": { "$ref": "#/$defs/style" },
         "abstract_title": { "$ref": "#/$defs/style" },
         "abstract_content": { "$ref": "#/$defs/style" },
         "keywords": { "$ref": "#/$defs/style" },
+        "abstract_en_title": { "$ref": "#/$defs/style" },
+        "abstract_en_content": { "$ref": "#/$defs/style" },
+        "keywords_en": { "$ref": "#/$defs/style" },
         "heading_1": { "$ref": "#/$defs/style" },
         "heading_2": { "$ref": "#/$defs/style" },
         "heading_3": { "$ref": "#/$defs/style" },
         "body": { "$ref": "#/$defs/style" },
+        "keywords_en_label": { "$ref": "#/$defs/style" },
+        "keywords_en_content": { "$ref": "#/$defs/style" },
         "table_caption": { "$ref": "#/$defs/style" },
         "figure_caption": { "$ref": "#/$defs/style" },
         "reference_title": { "$ref": "#/$defs/style" },
@@ -51,6 +60,19 @@
     },
     "latin_digit_format": {
       "$ref": "#/$defs/latin_digit_format"
+    },
+    "reference_latin_digit_format": {
+      "$ref": "#/$defs/reference_latin_digit_format"
+    },
+    "toc": {
+      "$ref": "#/$defs/toc"
+    },
+    "unsupported_modules": {
+      "$ref": "#/$defs/unsupported_modules"
+    },
+    "warnings": {
+      "type": "array",
+      "items": { "type": "string" }
     }
   },
   "additionalProperties": false,
@@ -75,8 +97,12 @@
         },
         "line_spacing": { "type": "number" },
         "first_line_indent_pt": { "type": "number" },
+        "first_line_indent_chars": { "type": "number" },
+        "hanging_indent_chars": { "type": "number" },
         "space_before_pt": { "type": "number" },
         "space_after_pt": { "type": "number" },
+        "space_before_lines": { "type": "number" },
+        "space_after_lines": { "type": "number" },
         "keep_with_next": { "type": "boolean" },
         "keep_together": { "type": "boolean" }
       },
@@ -91,8 +117,64 @@
         "size_cn": { "type": "string" },
         "scope": {
           "type": "string",
-          "enum": ["global", "body"]
+          "enum": ["global", "body", "abstract", "heading"]
         }
+      },
+      "additionalProperties": false
+    },
+    "reference_latin_digit_format": {
+      "type": "object",
+      "description": "参考文献英文和数字字符格式规则。",
+      "properties": {
+        "font": { "type": "string" },
+        "size_pt": { "type": "number" },
+        "size_cn": { "type": "string" },
+        "scope": {
+          "type": "string",
+          "enum": ["reference"]
+        }
+      },
+      "additionalProperties": false
+    },
+    "toc": {
+      "type": "object",
+      "description": "目录处理策略。",
+      "properties": {
+        "action": {
+          "type": "string",
+          "enum": ["protect"]
+        }
+      },
+      "additionalProperties": false
+    },
+    "unsupported_module": {
+      "type": "object",
+      "required": ["status", "action", "note"],
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": ["detected_but_not_supported"]
+        },
+        "action": {
+          "type": "string",
+          "enum": ["warning_only"]
+        },
+        "note": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "unsupported_modules": {
+      "type": "object",
+      "description": "检测到但当前版本不执行的模块。",
+      "properties": {
+        "header_footer": { "$ref": "#/$defs/unsupported_module" },
+        "page_number": { "$ref": "#/$defs/unsupported_module" },
+        "footnote": { "$ref": "#/$defs/unsupported_module" },
+        "endnote": { "$ref": "#/$defs/unsupported_module" },
+        "table_three_line": { "$ref": "#/$defs/unsupported_module" },
+        "formula": { "$ref": "#/$defs/unsupported_module" },
+        "figure_caption": { "$ref": "#/$defs/unsupported_module" },
+        "table_caption": { "$ref": "#/$defs/unsupported_module" }
       },
       "additionalProperties": false
     }
