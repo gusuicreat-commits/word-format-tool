@@ -108,7 +108,6 @@ type ParseStatus = "idle" | "parsing" | "success" | "error";
 type FormatStatus = "idle" | "processing" | "success" | "error";
 
 const MAX_FILE_SIZE = 10 * 1024 * 1024;
-const MAX_OVERRIDE_SIZE = 1 * 1024 * 1024;
 const MAX_REQUIREMENTS_LENGTH = 5000;
 
 const REQUIREMENTS_EXAMPLE = `论文标题黑体三号居中；
@@ -145,7 +144,6 @@ export default function HomePage() {
   const [requirementsText, setRequirementsText] = useState("");
   const [parsedOverride, setParsedOverride] = useState<unknown | null>(null);
   const [parseResult, setParseResult] = useState<ParseResult | null>(null);
-  const [overrideFile, setOverrideFile] = useState<File | null>(null);
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [parseStatus, setParseStatus] = useState<ParseStatus>("idle");
   const [parseError, setParseError] = useState("");
@@ -272,31 +270,6 @@ export default function HomePage() {
     resetFormatFeedback();
   }
 
-  function handleOverrideChange(nextFile: File | null) {
-    resetFormatFeedback();
-
-    if (!nextFile) {
-      setOverrideFile(null);
-      return;
-    }
-
-    if (!nextFile.name.toLowerCase().endsWith(".json")) {
-      setOverrideFile(null);
-      setFormatError("自定义覆盖规则只能上传 .json 文件。");
-      setFormatStatus("error");
-      return;
-    }
-
-    if (nextFile.size > MAX_OVERRIDE_SIZE) {
-      setOverrideFile(null);
-      setFormatError("自定义覆盖规则 JSON 不能超过 1MB。");
-      setFormatStatus("error");
-      return;
-    }
-
-    setOverrideFile(nextFile);
-  }
-
   async function handleParseRequirements(forceMode: "auto" | "local" = "auto") {
     const runId = parseRunIdRef.current + 1;
     parseRunIdRef.current = runId;
@@ -367,9 +340,9 @@ export default function HomePage() {
       }
       setParseStatus("error");
       if (error instanceof DOMException && error.name === "AbortError") {
-        setParseError("解析请求超时，请检查 Kimi API 网络、模型名，或稍后重试。");
+        setParseError("识别超时，请检查网络或稍后重试。");
       } else {
-        setParseError("解析请求失败：本地 Next.js 服务可能已停止，请在 web 目录重新运行 npm run dev。");
+        setParseError("识别失败：本地页面服务可能已停止，请重新启动后再试。");
       }
       setParseRecoveryActions(getDefaultRecoveryActions());
     } finally {
@@ -409,25 +382,25 @@ export default function HomePage() {
     }
 
     if (!templateName) {
-      setFormatError("请选择基础模板。");
+      setFormatError("请选择默认排版方案。");
       setFormatStatus("error");
       return;
     }
 
     if (requirementsText.trim() && !parsedOverride) {
-      setFormatError("请先点击“解析格式要求”，确认识别结果后再开始处理。");
+      setFormatError("请先点击“解析格式要求”，确认识别结果后再开始修改。");
       setFormatStatus("error");
       return;
     }
 
     if (hasUnconfirmedRules) {
-      setFormatError("请先确认识别出的格式规则，再开始处理 Word。");
+      setFormatError("请先确认识别出的格式规则，再开始修改 Word。");
       setFormatStatus("error");
       return;
     }
 
     if (hasUnconfirmedConflictWarnings) {
-      setFormatError("存在格式冲突，请先人工确认后再继续处理。");
+      setFormatError("有些格式要求前后不太一致，请先确认后再继续。");
       setFormatStatus("error");
       return;
     }
@@ -444,26 +417,11 @@ export default function HomePage() {
       return;
     }
 
-    if (overrideFile && !overrideFile.name.toLowerCase().endsWith(".json")) {
-      setFormatError("自定义覆盖规则只能上传 .json 文件。");
-      setFormatStatus("error");
-      return;
-    }
-
-    if (overrideFile && overrideFile.size > MAX_OVERRIDE_SIZE) {
-      setFormatError("自定义覆盖规则 JSON 不能超过 1MB。");
-      setFormatStatus("error");
-      return;
-    }
-
     const formData = new FormData();
     formData.append("file", file);
     formData.append("template", templateName);
     if (parsedOverride) {
       formData.append("overrideText", JSON.stringify(parsedOverride));
-    }
-    if (overrideFile) {
-      formData.append("override", overrideFile);
     }
 
     setIsSubmitting(true);
@@ -478,7 +436,7 @@ export default function HomePage() {
 
       if (!data.success) {
         setFormatStatus("error");
-        setFormatError(data.message || "处理失败。");
+        setFormatError(data.message || "修改失败。");
         return;
       }
 
@@ -487,7 +445,7 @@ export default function HomePage() {
       setNotices(data.notices || []);
     } catch {
       setFormatStatus("error");
-      setFormatError("处理请求失败，请确认本地服务正在运行。");
+      setFormatError("修改失败，请确认本地服务正在运行。");
     } finally {
       setIsSubmitting(false);
     }
@@ -500,19 +458,17 @@ export default function HomePage() {
   const keywordsCount = stats?.keywords || 0;
   const referenceCount =
     (stats?.reference_title || 0) + (stats?.reference_item || 0);
-  const overrideEnabled = Boolean(result?.report?.override?.enabled);
-  const overriddenFields = result?.report?.override?.overridden_fields || [];
-  const hiddenOverriddenFieldCount = Math.max(0, overriddenFields.length - 10);
   const baseTemplateName =
     result?.report?.baseTemplate?.name || result?.report?.template.name || templateName;
+  const baseTemplateDisplayName = getTemplateTitle({
+    name: baseTemplateName,
+    description: result?.report?.baseTemplate?.description || "",
+  });
   const parseWarnings = parseResult?.warnings || [];
   const parseConflictWarnings = parseWarnings.filter(isConflictWarning);
   const parseRegularWarnings = parseWarnings.filter((warning) => !isConflictWarning(warning));
   const resultOverrideWarnings = result?.report?.override?.warnings || [];
   const resultConflictWarnings = resultOverrideWarnings.filter(isConflictWarning);
-  const resultRegularOverrideWarnings = resultOverrideWarnings.filter(
-    (warning) => !isConflictWarning(warning),
-  );
   const moduleStatus = result?.report?.moduleStatus || {};
   const selectedTemplateTitle = selectedTemplate
     ? getTemplateTitle(selectedTemplate)
@@ -523,7 +479,7 @@ export default function HomePage() {
       <header className="header">
         <h1>Word 论文格式修改器</h1>
         <p>上传 Word 论文，粘贴老师的格式要求，系统将自动规范论文格式。</p>
-        <p className="header-subnote">AI 负责理解要求，程序负责修改 Word。</p>
+        <p className="header-subnote">先帮你读懂老师要求，再按确认后的规则修改 Word。</p>
       </header>
 
       <form className="workspace" onSubmit={handleSubmit}>
@@ -563,7 +519,7 @@ export default function HomePage() {
               onChange={(event) => handleRequirementsChange(event.target.value)}
             />
             <div className="hint">
-              常见规则会优先本地快速解析；复杂要求才调用 Kimi，并会缓存相同解析结果。
+              简单要求会快速识别；复杂要求会多花一点时间。相同内容会自动复用上次结果。
             </div>
             <div className="inline-actions">
               <button
@@ -594,20 +550,20 @@ export default function HomePage() {
             <StatusLine
               status={parseStatus}
               idle="可粘贴老师的自然语言格式要求，然后点击解析。"
-              loading="正在调用 Kimi 智能解析，复杂要求可能需要 20-60 秒。"
+              loading="正在理解格式要求，复杂内容可能需要 20-60 秒。"
               success="格式要求解析成功，请检查识别结果。"
               error={`解析失败：${parseError}`}
             />
             {parseStatus === "parsing" && parseSlowHintVisible ? (
               <div className="notice parse-wait-notice" role="status">
-                <p>Kimi 仍在解析复杂要求，可继续等待或改用本地快速解析。</p>
+                <p>还在理解复杂要求，可以继续等待，也可以改用快速识别。</p>
                 <button
                   className="button secondary"
                   type="button"
                   disabled={!requirementsText.trim()}
                   onClick={handleUseLocalParser}
                 >
-                  改用本地快速解析
+                  改用快速识别
                 </button>
               </div>
             ) : null}
@@ -621,7 +577,7 @@ export default function HomePage() {
                     disabled={isParsing || !requirementsText.trim()}
                     onClick={() => handleParseRequirements()}
                   >
-                    重试 Kimi
+                    重新识别
                   </button>
                   <button
                     className="button secondary"
@@ -629,7 +585,7 @@ export default function HomePage() {
                     disabled={isParsing || !requirementsText.trim()}
                     onClick={handleUseLocalParser}
                   >
-                    改用本地快速解析
+                    改用快速识别
                   </button>
                   <button
                     className="text-button secondary-action"
@@ -637,7 +593,7 @@ export default function HomePage() {
                     disabled={isParsing}
                     onClick={handleEditRequirementsAfterParseError}
                   >
-                    返回修改要求编辑
+                    返回修改要求
                   </button>
                 </div>
               </div>
@@ -647,14 +603,14 @@ export default function HomePage() {
 
         <section className="template-notice">
           <strong>
-            当前基础模板：{selectedTemplateTitle}（{templateName || "default"}）
+            当前排版方案：{selectedTemplateTitle}
           </strong>
           <span>
-            未明确说明的格式将继承基础模板，例如正文、标题、摘要关键词、图题表题、参考文献和页边距。
+            老师没单独说明的地方，会按这个方案的默认规则处理，例如正文、标题、摘要关键词、图题表题、参考文献和页边距。
           </span>
           <details className="inheritance-details">
-            <summary>查看继承内容</summary>
-            <p>默认继承内容包括：</p>
+            <summary>查看默认会处理哪些内容</summary>
+            <p>没有单独说明时，下面这些会按默认方案处理：</p>
             <ul>
               <li>正文基础格式</li>
               <li>一级/二级/三级标题格式</li>
@@ -671,13 +627,13 @@ export default function HomePage() {
             <h2 className="section-title">识别出的格式规则</h2>
             {parseResult.mode ? (
               <p className="hint">
-                解析模式：{getParseModeLabel(parseResult.mode)}
-                {parseResult.cached ? "，已使用缓存" : ""}
+                识别方式：{getParseModeLabel(parseResult.mode)}
+                {parseResult.cached ? "，已复用上次结果" : ""}
               </p>
             ) : null}
             {parseResult.canonicalRequirementsText ? (
               <div className="canonical-requirements">
-                <h3>Kimi 规范化清单</h3>
+                <h3>整理后的老师要求</h3>
                 <pre>{parseResult.canonicalRequirementsText}</pre>
               </div>
             ) : null}
@@ -708,10 +664,10 @@ export default function HomePage() {
                 ))}
               </ul>
             ) : (
-              <p className="hint">没有识别出明确覆盖字段，将继承基础模板。</p>
+              <p className="hint">没有识别到需要单独修改的格式，后续会按默认排版方案处理。</p>
             )}
             <p className="review-hint">
-              下方仅显示老师要求中识别出的覆盖字段；未显示的字段会继续使用基础模板规则。
+              这里只列出老师明确提到的格式；没提到的地方会按默认排版方案处理。
             </p>
             <label className="rules-confirm">
               <input
@@ -731,7 +687,7 @@ export default function HomePage() {
                     disabled={isSubmitting}
                     onChange={(event) => setConflictAcknowledged(event.target.checked)}
                   />
-                  <span>我已确认以上冲突，仍然继续处理。</span>
+                  <span>我已看过这些不一致的地方，仍然继续修改。</span>
                 </label>
               </ConflictWarningCard>
             ) : null}
@@ -740,13 +696,13 @@ export default function HomePage() {
                 <strong>系统提醒：</strong>
                 <ul>
                   {parseRegularWarnings.map((warning, index) => (
-                    <li key={`${warning}-${index}`}>{warning}</li>
+                    <li key={`${warning}-${index}`}>{getFriendlyWarningMessage(warning)}</li>
                   ))}
                 </ul>
               </div>
             ) : null}
             <details className="json-details debug-details">
-              <summary>调试信息</summary>
+              <summary>技术细节（一般不用看）</summary>
               <DebugBlock title="canonicalRequirementsText" value={parseResult.canonicalRequirementsText || ""} />
               <DebugBlock title="rawModelOutput" value={parseResult.rawModelOutput || ""} />
               <DebugBlock title="parsedOverride" value={parseResult.parsedOverride} />
@@ -766,21 +722,18 @@ export default function HomePage() {
               </button>
               {parseConflictWarnings.length ? (
                 <p className="conflict-action-note">
-                  存在格式冲突，系统将按当前采用规则处理，请确认后继续。
+                  有些格式要求前后不太一致，请确认后再继续。
                 </p>
               ) : null}
-              {result?.downloadUrl ? (
-                <a className="button download-button" href={result.downloadUrl}>
-                  下载修改后的 Word
-                </a>
+              {formatStatus !== "success" ? (
+                <StatusLine
+                  status={formatStatus}
+                  idle="确认识别结果后，可以开始修改 Word。"
+                  loading="正在识别论文结构并应用格式……"
+                  success=""
+                  error={`处理失败：${formatError}`}
+                />
               ) : null}
-              <StatusLine
-                status={formatStatus}
-                idle="确认识别结果后，可以开始修改 Word。"
-                loading="正在识别论文结构并应用格式……"
-                success="处理完成，可以下载修改后的 Word。"
-                error={`处理失败：${formatError}`}
-              />
             </div>
           </section>
         ) : null}
@@ -799,13 +752,13 @@ export default function HomePage() {
           {advancedOpen ? (
             <div className="advanced-content">
               <div className="advanced-section">
-                <h2 className="section-title">基础模板</h2>
+                <h2 className="section-title">默认排版方案</h2>
                 <p className="hint">
-                  默认使用通用默认模板。只有明确知道需要课程论文模板时，再切换这里。
+                  一般不用改。只有明确要按课程论文排版时，再切换这里。
                 </p>
                 <div className="template-grid">
                   {templates.length === 0 ? (
-                    <div className="template-card disabled">未找到模板</div>
+                    <div className="template-card disabled">未找到可用方案</div>
                   ) : (
                     templates.map((template) => (
                       <button
@@ -828,7 +781,7 @@ export default function HomePage() {
                       >
                         <strong>{getTemplateTitle(template)}</strong>
                         <span>{getTemplateCardDescription(template)}</span>
-                        <small>模板名：{template.name}</small>
+                        <small>方案代码：{template.name}</small>
                         {template.name === templateName ? <em>已选择</em> : null}
                       </button>
                     ))
@@ -836,54 +789,31 @@ export default function HomePage() {
                 </div>
               </div>
 
-              <div className="field developer-option">
-                <label className="field-label" htmlFor="override">
-                  开发者选项：上传自定义覆盖规则 JSON
-                </label>
-                <input
-                  id="override"
-                  type="file"
-                  accept=".json"
-                  disabled={isSubmitting || isParsing}
-                  onChange={(event) =>
-                    handleOverrideChange(event.target.files?.[0] || null)
-                  }
-                />
-                <div className="hint">
-                  仅供调试或高级用户使用。普通用户请直接粘贴老师的自然语言格式要求。
-                </div>
-                <div className="file-summary">
-                  {overrideFile
-                    ? `当前 JSON 文件：${overrideFile.name}`
-                    : "未上传自定义 JSON 文件"}
-                </div>
-              </div>
             </div>
           ) : null}
         </section>
 
-        <section className="submit-row">
-          <button className="button primary-button" type="submit" disabled={!canSubmit}>
-            {isSubmitting ? "处理中" : "开始处理"}
-          </button>
-          {parseConflictWarnings.length ? (
-            <p className="conflict-action-note">
-              存在格式冲突，系统将按当前采用规则处理，请确认后继续。
-            </p>
-          ) : null}
-          {result?.downloadUrl ? (
-            <a className="button secondary" href={result.downloadUrl}>
-              下载修改后的 Word
-            </a>
-          ) : null}
-          <StatusLine
-            status={formatStatus}
-            idle="请上传 Word 文件，并根据需要解析格式要求。"
-            loading="正在识别论文结构并应用格式……"
-            success="处理完成，可以下载修改后的 Word。"
-            error={`处理失败：${formatError}`}
-          />
-        </section>
+        {!parseResult?.success ? (
+          <section className="submit-row">
+            <button className="button primary-button" type="submit" disabled={!canSubmit}>
+              {isSubmitting ? "处理中" : "开始处理"}
+            </button>
+            {parseConflictWarnings.length ? (
+              <p className="conflict-action-note">
+                有些格式要求前后不太一致，请确认后再继续。
+              </p>
+            ) : null}
+            {formatStatus !== "success" ? (
+              <StatusLine
+                status={formatStatus}
+              idle="请上传 Word 文件；如果有老师要求，请先粘贴并识别。"
+                loading="正在识别论文结构并应用格式……"
+                success=""
+                error={`处理失败：${formatError}`}
+              />
+            ) : null}
+          </section>
+        ) : null}
 
         {notices.map((notice, index) => (
           <div className="notice" key={`${notice}-${index}`}>
@@ -895,7 +825,7 @@ export default function HomePage() {
       {result?.report ? (
         <section className="result">
           <div className="panel">
-            <h2 className="section-title">处理结果</h2>
+            <h2 className="section-title">修改结果</h2>
             {result.downloadUrl ? (
               <>
                 <div className="download-banner">
@@ -915,22 +845,20 @@ export default function HomePage() {
                 </div>
                 {resultConflictWarnings.length ? (
                   <ConflictWarningCard
-                    title="本次处理包含格式冲突警告"
+                    title="这次修改有需要确认的地方"
                     warnings={resultConflictWarnings}
                   />
                 ) : null}
               </>
             ) : null}
             <div className="source-grid">
-              <Info label="基础模板" value={baseTemplateName} />
-              <Info label="使用自定义覆盖" value={overrideEnabled ? "是" : "否"} />
-              <Info label="覆盖字段数量" value={String(overriddenFields.length)} />
+              <Info label="使用的排版方案" value={baseTemplateDisplayName} />
             </div>
             {Object.keys(moduleStatus).length ? (
               <details className="module-status-panel">
-                <summary>本次检测到的论文结构模块</summary>
+                <summary>这次识别到的论文内容</summary>
                 <p>
-                  系统只处理高置信度识别到的结构；未检测到或未明确要求的模块不会强行修改。
+                  系统只会修改比较确定的部分；没看准或老师没要求的地方，不会强行改。
                 </p>
                 <ul>
                   {MODULE_STATUS_ORDER.map((moduleKey) => {
@@ -967,55 +895,21 @@ export default function HomePage() {
               <Stat label="图题数量" value={stats?.figure_caption || 0} />
               <Stat label="参考文献" value={referenceCount} />
               <Stat label="表格" value={stats?.table || 0} />
-              <Stat label="警告数量" value={stats?.warning_count || 0} />
+              <Stat label="提醒数量" value={stats?.warning_count || 0} />
             </div>
           </div>
 
-          {overrideEnabled ? (
-            <div className="panel">
-              <h2 className="section-title">已覆盖字段</h2>
-              {overriddenFields.length === 0 ? (
-                <p className="hint">没有检测到实际覆盖字段。</p>
-              ) : (
-                <>
-                  <ul className="plain-list">
-                    {overriddenFields.slice(0, 10).map((field) => (
-                      <li key={field}>{field}</li>
-                    ))}
-                  </ul>
-                  {hiddenOverriddenFieldCount > 0 ? (
-                    <p className="hint">还有 {hiddenOverriddenFieldCount} 个字段未展示。</p>
-                  ) : null}
-                </>
-              )}
-              {resultRegularOverrideWarnings.length ? (
-                <ul className="warning-list">
-                  {resultRegularOverrideWarnings.map((warning, index) => (
-                    <li className="warning-item" key={`${warning}-${index}`}>
-                      <p>{warning}</p>
-                    </li>
-                  ))}
-                </ul>
-              ) : null}
-            </div>
-          ) : null}
-
           <div className="panel">
-            <h2 className="section-title">Warnings</h2>
+            <h2 className="section-title">需要注意的地方</h2>
             {result.report.warnings.length === 0 ? (
-              <p className="hint">没有发现需要提示的潜在误判。</p>
+              <p className="hint">暂时没有需要特别注意的地方。</p>
             ) : (
               <ul className="warning-list">
                 {result.report.warnings.map((warning, index) => (
                   <li className="warning-item" key={`${warning.message}-${index}`}>
-                    <strong>
-                      段落序号：
-                      {warning.paragraph_index === null
-                        ? "无"
-                        : warning.paragraph_index}
-                    </strong>
-                    <p>{warning.text_preview || "无文本预览"}</p>
-                    <p>{warning.message}</p>
+                    <strong>{getWarningLocationText(warning)}</strong>
+                    <p>相关文字：{warning.text_preview || "这条提示没有对应的文字预览"}</p>
+                    <p>{getFriendlyWarningMessage(warning.message)}</p>
                   </li>
                 ))}
               </ul>
@@ -1029,11 +923,11 @@ export default function HomePage() {
 
 function getTemplateTitle(template: TemplateItem) {
   if (template.name === "default") {
-    return "通用默认模板";
+    return "通用论文方案";
   }
 
   if (template.name === "course_paper") {
-    return "课程论文模板";
+    return "课程论文方案";
   }
 
   return template.displayName || template.description || template.name;
@@ -1048,7 +942,7 @@ function getTemplateCardDescription(template: TemplateItem) {
     return "标题更突出，适合课程论文、结课论文等场景。";
   }
 
-  return template.description || "自定义模板。";
+  return template.description || "自定义排版方案。";
 }
 
 function getRuleGroupDescription(type: string) {
@@ -1100,11 +994,11 @@ function getModuleStatusLabel(moduleKey: string) {
 
 function getModuleStatusText(status?: string) {
   const labels: Record<string, string> = {
-    detected: "已检测",
-    not_detected: "未检测",
-    not_requested: "未要求",
-    low_confidence: "低置信度",
-    detected_but_not_supported: "已检测但暂不支持",
+    detected: "已找到",
+    not_detected: "未找到",
+    not_requested: "老师没要求",
+    low_confidence: "不太确定",
+    detected_but_not_supported: "看到了，但暂时不会自动改",
   };
 
   return labels[status || ""] || status || "未知状态";
@@ -1112,51 +1006,51 @@ function getModuleStatusText(status?: string) {
 
 function getModuleActionText(action?: string) {
   const labels: Record<string, string> = {
-    formatted: "已处理",
-    skipped: "已跳过",
-    boundary_only: "用于边界判断",
-    protected: "保护不乱改",
-    warning_only: "仅提醒",
+    formatted: "已修改",
+    skipped: "未修改",
+    boundary_only: "只用来判断位置",
+    protected: "已保护，不乱改",
+    warning_only: "只提醒，不自动改",
   };
 
-  return labels[action || ""] || action || "无动作";
+  return labels[action || ""] || action || "无需要操作";
 }
 
 function getParseModeLabel(mode: ParseResult["mode"]) {
   if (mode === "kimi_canonical") {
-    return "Kimi 规范化清单";
+    return "智能识别";
   }
 
   if (mode === "mock_canonical") {
-    return "本地 mock 规范化清单";
+    return "测试识别";
   }
 
   if (mode === "mock") {
-    return "本地 mock";
+    return "测试识别";
   }
 
   if (mode === "local") {
-    return "本地快速解析";
+    return "快速识别";
   }
 
-  return "Kimi API";
+  return "智能识别";
 }
 
 function getDefaultRecoveryActions(): RecoveryAction[] {
   return [
     {
       id: "retry_kimi",
-      label: "重试 Kimi",
-      description: "重新调用 Kimi 解析，不会修改 Word。",
+      label: "重新识别",
+      description: "重新理解老师的格式要求，不会修改 Word。",
     },
     {
       id: "use_local_parser",
-      label: "改用本地快速解析",
-      description: "按本地规则保守解析，复杂细分要求需要人工确认。",
+      label: "改用快速识别",
+      description: "按常见规则快速识别，复杂要求需要你多看一眼。",
     },
     {
       id: "edit_requirements",
-      label: "返回修改要求编辑",
+      label: "返回修改要求",
       description: "继续编辑老师格式要求后再解析。",
     },
   ];
@@ -1166,8 +1060,61 @@ function isConflictWarning(warning: string) {
   return warning.includes("存在冲突");
 }
 
+function getWarningLocationText(warning: WarningItem) {
+  if (warning.paragraph_index === null) {
+    return "位置：未定位到具体段落";
+  }
+
+  return `位置：第 ${warning.paragraph_index} 段`;
+}
+
+function getFriendlyWarningMessage(message: string) {
+  const headingConflict = message.match(
+    /标题层级冲突：原 Word 样式 (.+?) 对应 (heading_\d)，但文本编号对应 (heading_\d)，已按文本编号层级处理。/,
+  );
+
+  if (headingConflict) {
+    const [, originalStyle, originalLevel, textLevel] = headingConflict;
+    const originalLevelText = getHeadingLevelText(originalLevel || originalStyle);
+    const textLevelText = getHeadingLevelText(textLevel);
+    return `这段标题的样式和编号不一致：Word 里原来看起来像${originalLevelText}，但从编号看应该是${textLevelText}。系统已经按编号处理成${textLevelText}。`;
+  }
+
+  if (message.includes("页眉") || message.includes("页脚")) {
+    return "页眉页脚这类内容暂时只做提醒，不会自动改动。下载后可以在 Word 里手动检查。";
+  }
+
+  if (message.includes("页码")) {
+    return "页码暂时只做提醒，不会自动插入或重新编号。下载后可以在 Word 里手动检查。";
+  }
+
+  return message
+    .replaceAll("heading_1", "一级标题")
+    .replaceAll("heading_2", "二级标题")
+    .replaceAll("heading_3", "三级标题")
+    .replaceAll("Heading 1", "一级标题")
+    .replaceAll("Heading 2", "二级标题")
+    .replaceAll("Heading 3", "三级标题");
+}
+
+function getHeadingLevelText(value: string) {
+  if (value.includes("heading_1") || value.includes("Heading 1")) {
+    return "一级标题";
+  }
+
+  if (value.includes("heading_2") || value.includes("Heading 2")) {
+    return "二级标题";
+  }
+
+  if (value.includes("heading_3") || value.includes("Heading 3")) {
+    return "三级标题";
+  }
+
+  return "当前识别到的标题";
+}
+
 function ConflictWarningCard({
-  title = "检测到格式要求冲突，请人工确认",
+  title = "发现几处要求前后不太一致",
   warnings,
   children,
 }: {
@@ -1182,11 +1129,11 @@ function ConflictWarningCard({
         <strong>{title}</strong>
       </div>
       <p>
-        系统发现老师要求中存在互相矛盾的格式规则。当前已暂按后者覆盖前面的要求处理，但建议你确认是否符合老师真实要求。
+        老师要求里有几处说法前后不完全一致。系统会按后面更明确的说法处理，但建议你看一眼。
       </p>
       <ul>
         {warnings.map((warning, index) => (
-          <li key={`${warning}-${index}`}>{warning}</li>
+          <li key={`${warning}-${index}`}>{getFriendlyWarningMessage(warning)}</li>
         ))}
       </ul>
       {children}
