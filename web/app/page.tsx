@@ -99,6 +99,7 @@ type FormatResult = {
   success: boolean;
   jobId?: string;
   message: string;
+  errorCode?: string;
   downloadUrl?: string;
   notices?: string[];
   report?: ReportSummary;
@@ -432,11 +433,23 @@ export default function HomePage() {
         method: "POST",
         body: formData,
       });
-      const data = (await response.json()) as FormatResult;
-
-      if (!data.success) {
+      const responseText = await response.text();
+      let data: FormatResult | null = null;
+      try {
+        data = JSON.parse(responseText) as FormatResult;
+      } catch {
         setFormatStatus("error");
-        setFormatError(data.message || "修改失败。");
+        setFormatError(
+          response.ok
+            ? "本地服务返回了无法识别的结果，请重新修改 Word。"
+            : `本地服务返回 ${response.status}，但没有给出可读的错误信息。`,
+        );
+        return;
+      }
+
+      if (!response.ok || !data.success) {
+        setFormatStatus("error");
+        setFormatError(getFormatFailureMessage(data, response.status));
         return;
       }
 
@@ -445,7 +458,7 @@ export default function HomePage() {
       setNotices(data.notices || []);
     } catch {
       setFormatStatus("error");
-      setFormatError("修改失败，请确认本地服务正在运行。");
+      setFormatError("浏览器没有连上本地服务，请确认 http://localhost:3000 正在运行后重试。");
     } finally {
       setIsSubmitting(false);
     }
@@ -931,6 +944,34 @@ function getTemplateTitle(template: TemplateItem) {
   }
 
   return template.displayName || template.description || template.name;
+}
+
+function getFormatFailureMessage(data: FormatResult, status: number) {
+  const fallback = data.message || `修改失败，本地服务返回 ${status}。`;
+  const errorMessages: Record<string, string> = {
+    missing_input_file: "没有收到 Word 文件，请重新上传后再试。",
+    missing_template: "没有选择默认排版方案，请选择后再试。",
+    invalid_template: "默认排版方案名称不正确，请重新选择。",
+    invalid_docx: "只能上传 .docx 格式的 Word 文件。",
+    file_too_large: "Word 文件不能超过 10MB。",
+    override_too_large: "识别出的格式规则太长，请精简要求后重新识别。",
+    invalid_override_json: "识别出的格式规则不完整，请重新解析格式要求。",
+    invalid_override_file: "上传的规则文件格式不正确。",
+    temp_job_create_failed: "创建临时处理目录失败，请检查文件权限。",
+    input_file_missing: "上传后的 Word 文件没有保存成功，请重新上传。",
+    format_script_missing: "本地 Word 修改脚本不存在，请检查项目文件是否完整。",
+    python_not_found: "找不到可用的 Python，无法开始修改 Word。",
+    python_missing_dependency: "当前 Python 缺少 Word 处理依赖，无法修改 Word。",
+    format_docx_failed: fallback,
+    output_docx_missing: "修改过程结束了，但没有生成新的 Word 文件。",
+    report_missing: "修改过程结束了，但没有生成处理报告。",
+    report_json_invalid: "处理报告读取失败，请重新修改 Word。",
+    permission_denied: "文件权限不足，请关闭正在占用的 Word 文件后重试。",
+    api_route_error: fallback,
+    unknown_error: fallback,
+  };
+
+  return errorMessages[data.errorCode || ""] || fallback;
 }
 
 function getTemplateCardDescription(template: TemplateItem) {

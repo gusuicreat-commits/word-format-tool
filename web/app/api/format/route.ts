@@ -16,7 +16,30 @@ type ProcessResult = {
   code: number | null;
   stdout: string;
   stderr: string;
+  command: string;
 };
+
+type FormatErrorCode =
+  | "missing_input_file"
+  | "missing_template"
+  | "invalid_template"
+  | "invalid_docx"
+  | "file_too_large"
+  | "override_too_large"
+  | "invalid_override_json"
+  | "invalid_override_file"
+  | "temp_job_create_failed"
+  | "input_file_missing"
+  | "format_script_missing"
+  | "python_not_found"
+  | "python_missing_dependency"
+  | "format_docx_failed"
+  | "output_docx_missing"
+  | "report_missing"
+  | "report_json_invalid"
+  | "permission_denied"
+  | "api_route_error"
+  | "unknown_error";
 
 type ReportFile = {
   template?: {
@@ -68,24 +91,24 @@ export async function POST(request: Request) {
     const notices: string[] = [];
 
     if (!(fileValue instanceof File)) {
-      return fail("请上传 .docx 文件。", 400);
+      return fail("请先上传 Word 文件。", 400, "missing_input_file");
     }
 
     if (typeof templateValue !== "string" || !templateValue.trim()) {
-      return fail("请选择模板。", 400);
+      return fail("请选择默认排版方案。", 400, "missing_template");
     }
 
     const templateName = templateValue.trim();
     if (!SAFE_TEMPLATE_NAME.test(templateName)) {
-      return fail("模板名称不合法。", 400);
+      return fail("默认排版方案名称不合法。", 400, "invalid_template");
     }
 
     if (!fileValue.name.toLowerCase().endsWith(".docx")) {
-      return fail("错误：输入文件必须是 .docx 格式。", 400);
+      return fail("只能上传 .docx 格式的 Word 文件。", 400, "invalid_docx");
     }
 
     if (fileValue.size > MAX_FILE_SIZE) {
-      return fail("Word 文件不能超过 10MB。", 400);
+      return fail("Word 文件不能超过 10MB。", 400, "file_too_large");
     }
 
     const overrideText =
@@ -95,15 +118,16 @@ export async function POST(request: Request) {
 
     if (overrideText) {
       if (Buffer.byteLength(overrideText, "utf-8") > MAX_OVERRIDE_TEXT_SIZE) {
-        return fail("自定义格式要求内容过长，请精简后再试。", 400);
+        return fail("识别出的格式规则太长，请精简格式要求后再试。", 400, "override_too_large");
       }
 
       try {
         parsedOverrideText = JSON.parse(overrideText);
       } catch {
         return fail(
-          "自定义格式要求不是合法 JSON。当前版本暂不支持自然语言，请粘贴 JSON 覆盖规则。",
+          "识别出的格式规则不是有效 JSON，请重新解析格式要求。",
           400,
+          "invalid_override_json",
         );
       }
 
@@ -113,8 +137,9 @@ export async function POST(request: Request) {
         Array.isArray(parsedOverrideText)
       ) {
         return fail(
-          "自定义格式要求必须是 JSON 对象。当前版本暂不支持自然语言，请粘贴 JSON 覆盖规则。",
+          "识别出的格式规则格式不正确，请重新解析格式要求。",
           400,
+          "invalid_override_json",
         );
       }
 
@@ -125,10 +150,10 @@ export async function POST(request: Request) {
     } else if (overrideValue instanceof File && overrideValue.size > 0) {
       hasOverride = true;
       if (!overrideValue.name.toLowerCase().endsWith(".json")) {
-        return fail("自定义覆盖规则必须是 .json 文件。", 400);
+        return fail("上传的规则文件必须是 .json 文件。", 400, "invalid_override_file");
       }
       if (overrideValue.size > MAX_OVERRIDE_SIZE) {
-        return fail("自定义覆盖规则 JSON 不能超过 1MB。", 400);
+        return fail("上传的规则文件不能超过 1MB。", 400, "override_too_large");
       }
     }
 
@@ -139,7 +164,12 @@ export async function POST(request: Request) {
     const reportPath = path.join(jobDir, "report.json");
     const overridePath = path.join(jobDir, "override.json");
 
-    await fs.mkdir(jobDir, { recursive: true });
+    try {
+      await fs.mkdir(jobDir, { recursive: true });
+    } catch (error) {
+      console.error("创建临时处理目录失败", error);
+      return fail("创建临时处理目录失败，请检查文件权限。", 500, "temp_job_create_failed");
+    }
 
     const buffer = Buffer.from(await fileValue.arrayBuffer());
     await fs.writeFile(inputPath, buffer);
@@ -157,7 +187,15 @@ export async function POST(request: Request) {
 
     const projectRoot = path.resolve(process.cwd(), "..");
     const scriptPath = path.join(projectRoot, "format_docx.py");
-    const pythonCmd = process.env.PYTHON_CMD || "python";
+    const pythonCmd = process.env.PYTHON_CMD || getBundledPythonPath() || "python";
+
+    if (!existsSync(inputPath)) {
+      return fail("上传后的 Word 文件没有保存成功，请重新上传。", 500, "input_file_missing");
+    }
+
+    if (!existsSync(scriptPath)) {
+      return fail("本地 Word 修改脚本不存在，请检查项目文件是否完整。", 500, "format_script_missing");
+    }
 
     const pythonArgs = [
       scriptPath,
@@ -177,11 +215,32 @@ export async function POST(request: Request) {
     const result = await runPythonWithFallback(pythonCmd, pythonArgs);
 
     if (result.code !== 0) {
-      return fail(extractPythonMessage(result), 500);
+      const errorCode = classifyPythonFailure(result);
+      console.error("format_docx.py 执行失败", {
+        errorCode,
+        code: result.code,
+        command: maskUserPath(result.command),
+        stderr: result.stderr.slice(0, 2000),
+      });
+      return fail(extractPythonMessage(result), 500, errorCode);
     }
 
-    const reportRaw = await fs.readFile(reportPath, "utf-8");
-    const report = JSON.parse(reportRaw) as ReportFile;
+    if (!existsSync(outputPath)) {
+      return fail("Word 修改完成后没有生成输出文件。", 500, "output_docx_missing");
+    }
+
+    if (!existsSync(reportPath)) {
+      return fail("Word 修改完成后没有生成处理报告。", 500, "report_missing");
+    }
+
+    let report: ReportFile;
+    try {
+      const reportRaw = await fs.readFile(reportPath, "utf-8");
+      report = JSON.parse(reportRaw) as ReportFile;
+    } catch (error) {
+      console.error("读取处理报告失败", error);
+      return fail("处理报告读取失败，请重新修改 Word。", 500, "report_json_invalid");
+    }
 
     return NextResponse.json({
       success: true,
@@ -204,7 +263,11 @@ export async function POST(request: Request) {
     });
   } catch (error) {
     console.error("处理上传文件失败", error);
-    return fail("处理失败，请确认本地 Python 环境和文件权限正常。", 500);
+    return fail(
+      getUnknownErrorMessage(error),
+      500,
+      getUnknownErrorCode(error),
+    );
   }
 }
 
@@ -240,11 +303,12 @@ function runPython(command: string, args: string[]): Promise<ProcessResult> {
         code: -1,
         stdout,
         stderr: `无法启动 Python。请确认 PYTHON_CMD 或 python 命令可用。${error.message}`,
+        command,
       });
     });
 
     child.on("close", (code) => {
-      resolve({ code, stdout, stderr });
+      resolve({ code, stdout, stderr, command });
     });
   });
 }
@@ -288,8 +352,23 @@ function extractPythonMessage(result: ProcessResult) {
   return lines[0] || "Python 工具处理失败。";
 }
 
-function fail(message: string, status: number) {
-  return NextResponse.json({ success: false, message }, { status });
+function classifyPythonFailure(result: ProcessResult): FormatErrorCode {
+  const combined = `${result.stderr}\n${result.stdout}`;
+  if (result.code === -1) {
+    return "python_not_found";
+  }
+  if (
+    combined.includes("python-docx") ||
+    combined.includes("No module named 'docx'") ||
+    combined.includes('No module named "docx"')
+  ) {
+    return "python_missing_dependency";
+  }
+  return "format_docx_failed";
+}
+
+function fail(message: string, status: number, errorCode: FormatErrorCode = "unknown_error") {
+  return NextResponse.json({ success: false, message, errorCode }, { status });
 }
 
 function shouldRetryWithBundledPython(command: string, result: ProcessResult) {
@@ -327,4 +406,36 @@ function getBundledPythonPath() {
 
 function normalizeCommandPath(command: string) {
   return command.replaceAll("\\", "/").toLowerCase();
+}
+
+function getUnknownErrorCode(error: unknown): FormatErrorCode {
+  if (isNodeError(error) && error.code === "EACCES") {
+    return "permission_denied";
+  }
+  if (isNodeError(error) && error.code === "ENOENT") {
+    return "input_file_missing";
+  }
+  return "api_route_error";
+}
+
+function getUnknownErrorMessage(error: unknown) {
+  if (isNodeError(error) && error.code === "EACCES") {
+    return "本地文件权限不足，请关闭正在占用的 Word 文件后重试。";
+  }
+  if (isNodeError(error) && error.code === "ENOENT") {
+    return "处理所需的临时文件不存在，请重新上传 Word 后再试。";
+  }
+  return "修改失败，后端处理时遇到未知问题。";
+}
+
+function isNodeError(error: unknown): error is NodeJS.ErrnoException {
+  return error instanceof Error && "code" in error;
+}
+
+function maskUserPath(value: string) {
+  const homeDir = process.env.USERPROFILE || process.env.HOME || "";
+  if (!homeDir) {
+    return value;
+  }
+  return value.replaceAll(homeDir, "<USER_HOME>");
 }
