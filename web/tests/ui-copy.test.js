@@ -4,9 +4,9 @@ const path = require("node:path");
 
 const pageSource = fs.readFileSync(path.join(__dirname, "..", "app", "page.tsx"), "utf8");
 
-assert.match(pageSource, /步骤 1：上传论文/);
-assert.match(pageSource, /步骤 2：粘贴格式要求/);
-assert.match(pageSource, /先帮你读懂老师要求，再按确认后的规则修改 Word/);
+assert.match(pageSource, /01 \/ INPUT[\s\S]*?<strong>上传论文<\/strong>/);
+assert.match(pageSource, /02 \/ REQUIREMENTS[\s\S]*?<strong>粘贴格式要求<\/strong>/);
+assert.match(pageSource, /确认规则后，生成一份排版规范的 Word 文档/);
 assert.match(pageSource, /当前排版方案：/);
 assert.match(pageSource, /老师没单独说明的地方，会按这个方案的默认规则处理/);
 assert.match(pageSource, /正文、标题、摘要关键词、图题表题、参考文献和页边距/);

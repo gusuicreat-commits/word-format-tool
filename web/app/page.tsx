@@ -1,6 +1,8 @@
 "use client";
 
 import { FormEvent, ReactNode, useEffect, useMemo, useRef, useState } from "react";
+import FlowingRings from "./flowing-rings";
+import { Upload, FileText, X } from "lucide-react";
 
 type TemplateItem = {
   name: string;
@@ -142,6 +144,8 @@ export default function HomePage() {
   const [templates, setTemplates] = useState<TemplateItem[]>([]);
   const [templateName, setTemplateName] = useState("default");
   const [file, setFile] = useState<File | null>(null);
+  const [draggingFile, setDraggingFile] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const [requirementsText, setRequirementsText] = useState("");
   const [parsedOverride, setParsedOverride] = useState<unknown | null>(null);
   const [parseResult, setParseResult] = useState<ParseResult | null>(null);
@@ -490,35 +494,104 @@ export default function HomePage() {
   return (
     <main className="page">
       <header className="header">
-        <h1>Word 论文格式修改器</h1>
-        <p>上传 Word 论文，粘贴老师的格式要求，系统将自动规范论文格式。</p>
-        <p className="header-subnote">先帮你读懂老师要求，再按确认后的规则修改 Word。</p>
+        <div className="topbar">
+          <a className="brandmark" href="#workspace" aria-label="文格 Word 论文格式修改器">
+            <span aria-hidden="true">W</span>
+            <strong>文格</strong>
+            <small>WORD FORMAT TOOL</small>
+          </a>
+          <nav className="topbar-nav" aria-label="页面导航">
+            <a href="#workspace">WORKSPACE</a>
+            <a href="#settings">SETTINGS</a>
+            {result?.report ? <a href="#output">OUTPUT</a> : null}
+            <span className="topbar-status">
+              <span className="status-dot" aria-hidden="true" />
+              LOCAL
+            </span>
+          </nav>
+        </div>
+
+        <div className="hero-grid">
+          <div className="hero-copy">
+            <p className="eyebrow">BUILT FOR ACADEMIC DOCUMENTS.</p>
+            <h1>Word 论文<br />格式修改器</h1>
+            <p className="hero-description">
+              上传论文，粘贴老师的格式要求。确认规则后，生成一份排版规范的 Word 文档。
+            </p>
+            <a className="button hero-cta" href="#workspace">开始排版</a>
+          </div>
+
+          <figure className="hero-artwork">
+            <FlowingRings />
+            <figcaption>
+              <span>DOCUMENT STRUCTURE</span>
+              <span>LIVE SYSTEM / V2.6.0</span>
+            </figcaption>
+          </figure>
+        </div>
+
+        <div className="system-strip" aria-label="系统能力概览">
+          <span>DOCX: ENABLED</span>
+          <span>RULE PARSER: READY</span>
+          <span>TEMPLATES: {templates.length || "--"}</span>
+          <span>OUTPUT: WORD</span>
+        </div>
       </header>
 
       <form className="workspace" onSubmit={handleSubmit}>
-        <section className="main-grid">
+        <section className="main-grid" id="workspace">
           <div className="panel step-panel">
-            <div className="step-label">步骤 1：上传论文</div>
-            <label className="field-label" htmlFor="file">
-              Word 论文
-            </label>
+            <div className="step-label">
+              <span>01 / INPUT</span>
+              <strong>上传论文</strong>
+            </div>
             <input
               id="file"
+              ref={fileInputRef}
+              className="upload-native"
+              aria-label="Word 论文"
               type="file"
               accept=".docx"
               disabled={isSubmitting}
-              onChange={(event) =>
-                handleFileChange(event.target.files?.[0] || null)
-              }
+              onChange={(event) => {
+                const selected = event.target.files?.[0];
+                if (selected) handleFileChange(selected);
+                event.target.value = "";
+              }}
             />
-            <div className="hint">仅支持 .docx，最大 10MB。</div>
-            <div className="file-summary">
-              {file ? `当前文件：${file.name}` : "尚未选择 Word 文件"}
+            <button
+              type="button"
+              className={`upload-zone${draggingFile ? " is-dragging" : ""}${file ? " has-file" : ""}`}
+              disabled={isSubmitting}
+              onClick={() => fileInputRef.current?.click()}
+              onDragOver={(event) => {
+                event.preventDefault();
+                if (!isSubmitting) setDraggingFile(true);
+              }}
+              onDragLeave={(event) => {
+                if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDraggingFile(false);
+              }}
+              onDrop={(event) => {
+                event.preventDefault();
+                setDraggingFile(false);
+                if (!isSubmitting && event.dataTransfer.files[0]) handleFileChange(event.dataTransfer.files[0]);
+              }}
+            >
+              {file ? <FileText size={30} strokeWidth={1.25} aria-hidden="true" /> : <Upload size={30} strokeWidth={1.25} aria-hidden="true" />}
+              <strong>{file ? file.name : draggingFile ? "松开以上传论文" : "选择 Word 论文"}</strong>
+              <span>{file ? "点击更换文件" : "或将文件拖到这里"}</span>
+            </button>
+            <div className="upload-meta" aria-live="polite">
+              <span>{file ? `${(file.size / 1024 / 1024).toFixed(2)} MB · 已选择` : ".DOCX / 最大 10 MB"}</span>
+              {file ? <button type="button" className="upload-remove" title="移除文件" aria-label="移除文件" disabled={isSubmitting} onClick={() => handleFileChange(null)}><X size={16} aria-hidden="true" /></button> : <span>待上传</span>}
             </div>
           </div>
 
           <div className="panel step-panel">
-            <div className="step-label">步骤 2：粘贴格式要求</div>
+            <div className="step-label">
+              <span>02 / REQUIREMENTS</span>
+              <strong>粘贴格式要求</strong>
+            </div>
             <label className="field-label" htmlFor="requirementsText">
               格式要求
             </label>
@@ -751,7 +824,7 @@ export default function HomePage() {
           </section>
         ) : null}
 
-        <section className="panel advanced-panel">
+        <section className="panel advanced-panel" id="settings">
           <button
             className="advanced-toggle"
             type="button"
@@ -836,7 +909,7 @@ export default function HomePage() {
       </form>
 
       {result?.report ? (
-        <section className="result">
+        <section className="result" id="output">
           <div className="panel">
             <h2 className="section-title">修改结果</h2>
             {result.downloadUrl ? (
@@ -930,6 +1003,7 @@ export default function HomePage() {
           </div>
         </section>
       ) : null}
+      <footer className="footer"><span>文格 / WORD FORMAT TOOL</span><span>DOCUMENTS, IN ORDER.</span></footer>
     </main>
   );
 }
