@@ -10,6 +10,7 @@ __pycache__/
 *.pyo
 *.pyd
 .pytest_cache/
+.venv/
 
 # Node / Next.js
 node_modules/
@@ -28,6 +29,7 @@ web/tmp/
 
 # Generated reports and outputs
 reports/
+rendered/
 formatted-paper*.docx
 samples/output*.docx
 samples/*_output.docx

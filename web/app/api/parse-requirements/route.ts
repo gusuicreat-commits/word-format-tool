@@ -1,10 +1,13 @@
 import crypto from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
+import { owner, sameOrigin } from "../../../lib/session";
+import { limited } from "../../../lib/request-limit";
 import { NextResponse } from "next/server";
 
 import {
   analyzeRequirementComplexity,
+  auditRequirementCoverage,
   callKimiForCanonicalRequirements,
   detectStructuredRuleConflicts,
   detectSuspiciousInferredFields,
@@ -16,7 +19,7 @@ import {
   tryParseRequirementsLocally,
   validateOverrideAgainstSchema,
 } from "../../../lib/kimi";
-import { runPythonMergeRules } from "../../../lib/python";
+import { PythonExecutionError, runPythonMergeRules } from "../../../lib/python";
 import {
   collectOverrideFields,
   getFinalRulesPreview,
@@ -37,6 +40,11 @@ type ParseRequest = {
 };
 
 export async function POST(request: Request) {
+  return limited(request, () => execute(request));
+}
+async function execute(request: Request) {
+  let scratch: string | undefined;
+  if (!owner(request) || !sameOrigin(request)) return fail("请刷新页面后重试。", 403);
   try {
     let body: ParseRequest;
     try {
@@ -65,7 +73,7 @@ export async function POST(request: Request) {
       return fail("模板名称不合法。", 400);
     }
 
-    const cacheKey = makeCacheKey(templateName, requirementsText, forceMode);
+    const cacheKey = owner(request) + await makeCacheKey(templateName, requirementsText, forceMode);
     const cachedResult = parseCache.get(cacheKey);
     if (cachedResult) {
       return NextResponse.json({ ...cachedResult, cached: true });
@@ -214,6 +222,7 @@ export async function POST(request: Request) {
 
     const jobId = crypto.randomUUID();
     const jobDir = path.join(process.cwd(), "tmp", "parse-jobs", jobId);
+    scratch = jobDir;
     const overridePath = path.join(jobDir, "override.json");
     const finalRulesPath = path.join(jobDir, "final_rules.json");
     const debugRulesPath = path.join(jobDir, "debug_rules.json");
@@ -231,6 +240,9 @@ export async function POST(request: Request) {
       );
       mergeWarnings = mergeResult.warnings;
     } catch (error) {
+      if (error instanceof PythonExecutionError && error.errorCode !== "format_docx_failed") {
+        return fail(error.message, error.errorCode === "python_timeout" ? 504 : 500, error.errorCode);
+      }
       return fail(
         `格式要求解析失败：AI 解析出的格式规则未通过校验：${getGenericErrorMessage(error)}`,
         400,
@@ -255,7 +267,8 @@ export async function POST(request: Request) {
       normalizedOverride,
     );
     const warnings = Array.from(
-      new Set([...summary.warnings, ...conflictResult.warnings, ...suspiciousWarnings, ...mergeWarnings]),
+      new Set([...summary.warnings, ...conflictResult.warnings, ...suspiciousWarnings, ...mergeWarnings,
+        ...auditRequirementCoverage(requirementsText, normalizedOverride)]),
     );
     const responseOverride = attachParserMetadata(normalizedOverride, {
       parser_mode: mode,
@@ -314,6 +327,8 @@ export async function POST(request: Request) {
     return NextResponse.json(payload);
   } catch (error) {
     return fail(`格式要求解析失败：${getGenericErrorMessage(error)}`, 500);
+  } finally {
+    if (scratch) await fs.rm(scratch, { recursive: true, force: true });
   }
 }
 
@@ -547,12 +562,17 @@ function getRecoveryActions(errorCode: string) {
   return baseActions;
 }
 
-function makeCacheKey(templateName: string, requirementsText: string, forceMode = "auto") {
+async function makeCacheKey(templateName: string, requirementsText: string, forceMode = "auto") {
+  const root = path.resolve(process.cwd(), "..");
+  const dependencies = [path.join(root, "templates", `${templateName}.json`), path.join(root, "templates", "default.json"),
+    path.join(root, "format_docx.py"), path.join(root, "schemas", "format_rules.schema.json")];
+  const dependencyHash = crypto.createHash("sha256");
+  for (const file of dependencies) dependencyHash.update(await fs.readFile(file));
   const requirementsHash = crypto
     .createHash("sha256")
-    .update(requirementsText.replace(/\s+/g, " ").trim(), "utf8")
+    .update(requirementsText.replace(/\r\n?/g, "\n").trim(), "utf8")
     .digest("hex");
-  return `${templateName}::${forceMode}::${requirementsHash}`;
+  return `coverage-v1::${templateName}::${forceMode}::${process.env.ENABLE_KIMI_MOCK}::${JSON.stringify(getSafeKimiConfig())}::${dependencyHash.digest("hex")}::${requirementsHash}`;
 }
 
 function rememberParseResult(key: string, value: Record<string, unknown>) {
@@ -564,4 +584,5 @@ function rememberParseResult(key: string, value: Record<string, unknown>) {
   }
 
   parseCache.set(key, value);
+  setTimeout(() => { if (parseCache.get(key) === value) parseCache.delete(key); }, 2 * 60 * 60 * 1000).unref();
 }

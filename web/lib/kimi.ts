@@ -337,6 +337,7 @@ export async function callKimiForCanonicalRequirements(requirementsText: string)
     completion = await client.chat.completions.create(
       {
         model,
+        ...(model === "kimi-k2.6" ? { thinking: { type: "disabled" } } : {}),
         messages: [
           { role: "system", content: prompt.system },
           { role: "user", content: prompt.user },
@@ -422,6 +423,7 @@ export async function callKimiForRequirements(requirementsText: string) {
     completion = await client.chat.completions.create(
       {
         model,
+        ...(model === "kimi-k2.6" ? { thinking: { type: "disabled" } } : {}),
         messages: [
           { role: "system", content: prompt.system },
           { role: "user", content: prompt.user },
@@ -1361,6 +1363,26 @@ function parseCanonicalCharacterFormat(ruleText: string) {
   if (sizeCn) {
     config.size_cn = sizeCn;
   }
+  const points = parseAdditionalStyleFields(ruleText).size_pt;
+  if (typeof points === "number") config.size_pt = points;
+  return config;
+}
+
+function parseAdditionalStyleFields(clause: string): Record<string, unknown> {
+  const config: Record<string, unknown> = {};
+  const sizeText = clause
+    .replace(/(?:段前|段后|首行缩进|悬挂缩进|固定值?|最小值?|行距)\s*\d+(?:\.\d+)?\s*(?:磅|pt)/gi, "")
+    .replace(/\d+(?:\.\d+)?\s*(?:磅|pt)\s*(?:固定|最小|行距)/gi, "");
+  const pointSize = sizeText.match(/(\d+(?:\.\d+)?)\s*(?:磅|pt)/i);
+  if (pointSize) config.size_pt = Number(pointSize[1]);
+  for (const [label, field] of [["段前", "space_before"], ["段后", "space_after"]] as const) {
+    const points = clause.match(new RegExp(`${label}\\s*(\\d+(?:\\.\\d+)?)\\s*(?:磅|pt)`, "i"));
+    if (points) config[`${field}_pt`] = Number(points[1]);
+    const lines = parseLineBasedSpacing(clause, label);
+    if (lines !== null && lines !== undefined) config[`${field}_lines`] = lines;
+  }
+  const hanging = parseHangingIndentChars(clause);
+  if (typeof hanging === "number") config.hanging_indent_chars = hanging;
   return config;
 }
 
@@ -2319,12 +2341,55 @@ function detectStyleTargets(clause: string) {
   return Array.from(new Set(targets));
 }
 
+export function auditRequirementCoverage(text: string, rules: unknown): string[] {
+  const warnings: string[] = [];
+  const actual = isPlainObject(rules) ? rules : {};
+  const styles = isPlainObject(actual.styles) ? actual.styles : {};
+  for (const block of text.split(/[；;。\r\n]+/).filter(Boolean)) {
+    let targets: string[] = [];
+    for (const raw of block.split(/[，,]+/).filter(Boolean)) {
+      const clause = raw.trim();
+      const detected = detectStyleTargets(clause);
+      if (detected.length) targets = detected;
+      const config = parseStyleConfig(clause);
+      const page = parsePageConfig(clause);
+      let verified = targets.length > 0 && Object.keys(config).length > 0;
+      for (const target of targets) {
+        const value = isPlainObject(styles[target]) ? styles[target] as Record<string, unknown> : {};
+        for (const [key, expected] of Object.entries(config)) {
+          const effectiveKey = key === "size_cn" ? "size_pt" : key;
+          const effectiveValue = key === "size_cn" ? CHINESE_SIZE_TO_PT[String(expected)] : expected;
+          if (value[effectiveKey] !== effectiveValue && value[key] !== expected) verified = false;
+        }
+      }
+      if (Object.keys(page).length) {
+        verified = isPlainObject(actual.page) && Object.entries(page).every(([key, value]) => (actual.page as Record<string, unknown>)[key] === value);
+      }
+      const unsupported = /固定(?:值)?|最小值|分散对齐|页眉|页脚|页码|自动目录|更新目录|三线表|横向|纵向|分栏|图片|水印/.test(clause);
+      let rest = clause
+        .replace(/Times New Roman|Microsoft YaHei|微软雅黑|宋体|黑体|楷体|仿宋/gi, "")
+        .replace(/小初|初号|小[一二三四五六]|[一二三四五六七八]号/g, "")
+        .replace(/(?:段前|段后)\s*\d+(?:\.\d+)?\s*(?:磅|pt|行)/gi, "")
+        .replace(/(?:首行|悬挂)缩进\s*(?:\d+(?:\.\d+)?|两个)\s*(?:字符|字)/g, "")
+        .replace(/(?:\d+(?:\.\d+)?\s*倍(?:行距)?|单倍(?:行距)?|双倍(?:行距)?)/g, "")
+        .replace(/\d+(?:\.\d+)?\s*(?:磅|pt)/gi, "")
+        .replace(/(?:上|下|左|右)(?:页?边距)?\s*\d+(?:\.\d+)?\s*(?:厘米|cm)/gi, "")
+        .replace(/(?:不加粗|取消加粗|加粗|居中对齐|居中|两端对齐|左对齐|右对齐|不缩进|无缩进)/g, "")
+        .replace(/(?:一级标题|二级标题|三级标题|论文标题|参考文献|正文|图题|表题|页面设置|页边距|字体|字号|采用|设置|使用|为|是|：|:|\s)/g, "");
+      if (unsupported || rest || (!verified && (Object.keys(config).length > 0 || Object.keys(page).length > 0))) {
+        warnings.push(`需核对或手工处理：「${clause}」。${unsupported ? "包含当前未完整支持的要求。" : "无法确认这条要求已完整转换为执行规则。"}`);
+      }
+    }
+  }
+  return Array.from(new Set(warnings));
+}
+
 function parseStyleConfig(clause: string): Record<string, unknown> {
   if (isLatinDigitOnlyClause(clause)) {
     return {};
   }
 
-  const config: Record<string, unknown> = {};
+  const config: Record<string, unknown> = parseAdditionalStyleFields(clause);
   const font = parseFont(clause);
   const sizeCn = parseChineseSize(clause);
   const lineSpacing = parseLineSpacing(clause);

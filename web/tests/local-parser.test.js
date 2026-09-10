@@ -31,6 +31,7 @@ function loadKimiModule() {
 
 const {
   analyzeRequirementComplexity,
+  auditRequirementCoverage,
   detectStructuredRuleConflicts,
   mockCanonicalRequirementsText,
   mockParseRequirements,
@@ -489,4 +490,16 @@ assert.ok(
   "Expected parser cache lookup before Kimi call",
 );
 
-console.log(`local parser page margin tests passed: ${cases.length}`);
+const pointRules = tryParseRequirementsLocally("正文宋体12磅，段前6磅，悬挂缩进2字符。", { allowComplex: true });
+assert.equal(pointRules.styles.body.size_pt, 12);
+assert.equal(pointRules.styles.body.space_before_pt, 6);
+assert.equal(pointRules.styles.body.hanging_indent_chars, 2);
+assert.equal(auditRequirementCoverage("正文宋体12磅，段前6磅，悬挂缩进2字符。", pointRules).length, 0);
+for (const text of ["正文固定值20磅行距", "正文20磅固定行距"]) {
+  const parsed = tryParseRequirementsLocally(text);
+  assert.equal(parsed?.styles?.body?.size_pt, undefined);
+  assert.ok(auditRequirementCoverage(text, parsed).length > 0);
+}
+assert.ok(auditRequirementCoverage("正文宋体12磅", { styles: { body: { font: "宋体" } } }).length > 0);
+assert.ok(auditRequirementCoverage("自动生成目录", {}).length > 0);
+console.log(`local parser tests passed, including coverage and point-size regressions`);

@@ -1,0 +1,18 @@
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const ts = require('typescript');
+const source = fs.readFileSync(path.join(__dirname, '../lib/result-warnings.ts'), 'utf8');
+const compiled = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS } }).outputText;
+const loaded = { exports: {} };
+new Function('exports', compiled)(loaded.exports);
+const { actionableWarnings, conciseWarning } = loaded.exports;
+const warning = (message, paragraph_index = null) => ({ message, paragraph_index, text_preview: '' });
+assert.deepEqual(actionableWarnings([warning('已使用本地快速解析，复杂或含糊要求仍建议人工确认。')]), []);
+const risk = warning('固定行距暂不支持');
+assert.deepEqual(actionableWarnings([risk, risk]), [risk]);
+assert.equal(actionableWarnings([risk, { ...risk, paragraph_index: 3 }]).length, 2);
+assert.equal(actionableWarnings([warning('未知警告')]).length, 1);
+assert.equal(conciseWarning('未知警告'), '未知警告');
+assert.match(conciseWarning('已按保护策略保留该表格及其嵌套内容的原格式。'), /未套用新格式/);
+console.log('Result warning filtering and summaries passed.');

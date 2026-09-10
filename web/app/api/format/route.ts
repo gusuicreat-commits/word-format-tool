@@ -1,9 +1,12 @@
-import { spawn } from "node:child_process";
+import { classifyPythonFailure, extractPythonMessage, getPythonCommand, runPythonWithFallback } from "../../../lib/python";
 import { existsSync } from "node:fs";
 import crypto from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { NextResponse } from "next/server";
+import { validFormatReport } from "../../../lib/report-validation";
+import { owner, sameOrigin, ttl } from "../../../lib/session";
+import { limited } from "../../../lib/request-limit";
 
 export const runtime = "nodejs";
 
@@ -11,13 +14,6 @@ const MAX_FILE_SIZE = 10 * 1024 * 1024;
 const MAX_OVERRIDE_SIZE = 1 * 1024 * 1024;
 const MAX_OVERRIDE_TEXT_SIZE = 50 * 1024;
 const SAFE_TEMPLATE_NAME = /^[A-Za-z0-9_-]+$/;
-
-type ProcessResult = {
-  code: number | null;
-  stdout: string;
-  stderr: string;
-  command: string;
-};
 
 type FormatErrorCode =
   | "missing_input_file"
@@ -33,10 +29,13 @@ type FormatErrorCode =
   | "format_script_missing"
   | "python_not_found"
   | "python_missing_dependency"
+  | "python_timeout"
   | "format_docx_failed"
   | "output_docx_missing"
   | "report_missing"
   | "report_json_invalid"
+  | "report_schema_invalid"
+  | "review_invalid"
   | "permission_denied"
   | "api_route_error"
   | "unknown_error";
@@ -78,16 +77,28 @@ type ReportFile = {
     paragraph_index: number | null;
     text_preview: string;
     message: string;
+    detected_type?: string | null;
+    applied_style?: string | null;
+    table_index?: number;
   }>;
 };
 
 export async function POST(request: Request) {
+  return limited(request, () => execute(request));
+}
+async function execute(request: Request) {
+  if (!owner(request) || !sameOrigin(request)) return fail("请刷新页面后重试。", 403);
   try {
     const formData = await request.formData();
     const fileValue = formData.get("file");
     const templateValue = formData.get("template");
     const overrideTextValue = formData.get("overrideText");
     const overrideValue = formData.get("override");
+    const analyzing = formData.get("action") === "analyze";
+    const reviewText = formData.get("reviewPlan");
+    if (reviewText !== null && (typeof reviewText !== "string" || Buffer.byteLength(reviewText, "utf-8") > 2 * 1024 * 1024)) {
+      return fail("结构确认数据过大或无效。", 400);
+    }
     const notices: string[] = [];
 
     if (!(fileValue instanceof File)) {
@@ -163,9 +174,11 @@ export async function POST(request: Request) {
     const outputPath = path.join(jobDir, "output.docx");
     const reportPath = path.join(jobDir, "report.json");
     const overridePath = path.join(jobDir, "override.json");
+    const reviewPath = path.join(jobDir, "review.json");
 
     try {
       await fs.mkdir(jobDir, { recursive: true });
+      await fs.writeFile(path.join(jobDir, "access.json"), JSON.stringify({ owner: owner(request), expiresAt: Date.now() + ttl, taskId: request.headers.get("x-word-task") }));
     } catch (error) {
       console.error("创建临时处理目录失败", error);
       return fail("创建临时处理目录失败，请检查文件权限。", 500, "temp_job_create_failed");
@@ -173,6 +186,10 @@ export async function POST(request: Request) {
 
     const buffer = Buffer.from(await fileValue.arrayBuffer());
     await fs.writeFile(inputPath, buffer);
+    if (typeof reviewText === "string") {
+      try { JSON.parse(reviewText); } catch { return fail("结构确认数据不是有效 JSON。", 400); }
+      await fs.writeFile(reviewPath, reviewText, "utf-8");
+    }
 
     if (overrideText) {
       await fs.writeFile(
@@ -186,8 +203,8 @@ export async function POST(request: Request) {
     }
 
     const projectRoot = path.resolve(process.cwd(), "..");
-    const scriptPath = path.join(projectRoot, "format_docx.py");
-    const pythonCmd = process.env.PYTHON_CMD || getBundledPythonPath() || "python";
+    const scriptPath = path.join(projectRoot, analyzing || reviewText ? "review_workflow.py" : "format_docx.py");
+    const pythonCmd = getPythonCommand();
 
     if (!existsSync(inputPath)) {
       return fail("上传后的 Word 文件没有保存成功，请重新上传。", 500, "input_file_missing");
@@ -211,10 +228,15 @@ export async function POST(request: Request) {
     if (hasOverride) {
       pythonArgs.push("--override", overridePath);
     }
+    if (analyzing) pythonArgs.push("--analyze");
+    else if (reviewText) pythonArgs.push("--review-plan", reviewPath);
 
     const result = await runPythonWithFallback(pythonCmd, pythonArgs);
 
     if (result.code !== 0) {
+      if (reviewText && result.code === 2) {
+        return fail(extractPythonMessage(result), 400, "review_invalid");
+      }
       const errorCode = classifyPythonFailure(result);
       console.error("format_docx.py 执行失败", {
         errorCode,
@@ -222,9 +244,16 @@ export async function POST(request: Request) {
         command: maskUserPath(result.command),
         stderr: result.stderr.slice(0, 2000),
       });
-      return fail(extractPythonMessage(result), 500, errorCode);
+      return fail(extractPythonMessage(result), result.timedOut ? 504 : 500, errorCode);
     }
 
+    if (analyzing) {
+      const review = JSON.parse(await fs.readFile(reportPath, "utf-8"));
+      if (review.version !== 1 || !Array.isArray(review.items) || typeof review.input_sha256 !== "string") {
+        return fail("结构分析报告无效，请重新分析。", 500);
+      }
+      return NextResponse.json({ success: true, review });
+    }
     if (!existsSync(outputPath)) {
       return fail("Word 修改完成后没有生成输出文件。", 500, "output_docx_missing");
     }
@@ -241,6 +270,9 @@ export async function POST(request: Request) {
       console.error("读取处理报告失败", error);
       return fail("处理报告读取失败，请重新修改 Word。", 500, "report_json_invalid");
     }
+    if (!validFormatReport(report)) {
+      return fail("处理报告不完整或版本不兼容，不能确认处理结果。请重新处理。", 500, "report_schema_invalid");
+    }
 
     return NextResponse.json({
       success: true,
@@ -249,6 +281,7 @@ export async function POST(request: Request) {
       downloadUrl: `/api/download/${jobId}`,
       notices,
       report: {
+        verification: { layout: "not_performed" },
         template: {
           name: report.template?.name || templateName,
           description: report.template?.description || "",
@@ -271,141 +304,8 @@ export async function POST(request: Request) {
   }
 }
 
-function runPython(command: string, args: string[]): Promise<ProcessResult> {
-  return new Promise((resolve) => {
-    const child = spawn(command, args, {
-      cwd: path.resolve(process.cwd(), ".."),
-      shell: false,
-      windowsHide: true,
-      env: {
-        ...process.env,
-        PYTHONIOENCODING: "utf-8",
-        PYTHONUTF8: "1",
-      },
-    });
-
-    let stdout = "";
-    let stderr = "";
-
-    child.stdout.setEncoding("utf-8");
-    child.stderr.setEncoding("utf-8");
-
-    child.stdout.on("data", (chunk) => {
-      stdout += chunk;
-    });
-
-    child.stderr.on("data", (chunk) => {
-      stderr += chunk;
-    });
-
-    child.on("error", (error) => {
-      resolve({
-        code: -1,
-        stdout,
-        stderr: `无法启动 Python。请确认 PYTHON_CMD 或 python 命令可用。${error.message}`,
-        command,
-      });
-    });
-
-    child.on("close", (code) => {
-      resolve({ code, stdout, stderr, command });
-    });
-  });
-}
-
-async function runPythonWithFallback(command: string, args: string[]) {
-  const result = await runPython(command, args);
-  if (!shouldRetryWithBundledPython(command, result)) {
-    return result;
-  }
-
-  const bundledPython = getBundledPythonPath();
-  if (!bundledPython || normalizeCommandPath(bundledPython) === normalizeCommandPath(command)) {
-    return result;
-  }
-
-  return runPython(bundledPython, args);
-}
-
-function extractPythonMessage(result: ProcessResult) {
-  const combined = `${result.stderr}\n${result.stdout}`.trim();
-  const lines = combined
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean);
-  const errorLine = lines.find((line) => line.startsWith("错误："));
-
-  if (
-    combined.includes("python-docx") ||
-    combined.includes("No module named 'docx'") ||
-    combined.includes('No module named "docx"')
-  ) {
-    const baseMessage =
-      errorLine || "错误：当前网页调用的 Python 环境缺少 python-docx。";
-    return `${baseMessage} 请在项目根目录运行：python -m pip install -r requirements.txt，然后重启 npm run dev。`;
-  }
-
-  if (errorLine) {
-    return errorLine;
-  }
-
-  return lines[0] || "Python 工具处理失败。";
-}
-
-function classifyPythonFailure(result: ProcessResult): FormatErrorCode {
-  const combined = `${result.stderr}\n${result.stdout}`;
-  if (result.code === -1) {
-    return "python_not_found";
-  }
-  if (
-    combined.includes("python-docx") ||
-    combined.includes("No module named 'docx'") ||
-    combined.includes('No module named "docx"')
-  ) {
-    return "python_missing_dependency";
-  }
-  return "format_docx_failed";
-}
-
 function fail(message: string, status: number, errorCode: FormatErrorCode = "unknown_error") {
   return NextResponse.json({ success: false, message, errorCode }, { status });
-}
-
-function shouldRetryWithBundledPython(command: string, result: ProcessResult) {
-  if (normalizeCommandPath(command).includes("codex-primary-runtime")) {
-    return false;
-  }
-
-  const combined = `${result.stderr}\n${result.stdout}`;
-  return (
-    result.code === -1 ||
-    combined.includes("python-docx") ||
-    combined.includes("No module named 'docx'") ||
-    combined.includes('No module named "docx"')
-  );
-}
-
-function getBundledPythonPath() {
-  const homeDir = process.env.USERPROFILE || process.env.HOME;
-  if (!homeDir) {
-    return "";
-  }
-
-  const pythonPath = path.join(
-    homeDir,
-    ".cache",
-    "codex-runtimes",
-    "codex-primary-runtime",
-    "dependencies",
-    "python",
-    process.platform === "win32" ? "python.exe" : "bin/python",
-  );
-
-  return existsSync(pythonPath) ? pythonPath : "";
-}
-
-function normalizeCommandPath(command: string) {
-  return command.replaceAll("\\", "/").toLowerCase();
 }
 
 function getUnknownErrorCode(error: unknown): FormatErrorCode {

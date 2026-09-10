@@ -8,6 +8,10 @@
     "start": "next start",
     "test:parser": "node tests/local-parser.test.js",
     "test:ui-copy": "node tests/ui-copy.test.js",
+    "test:api": "node tests/python-api.test.js",
+    "test:browser": "node tests/task-browser.cjs",
+    "test:warnings": "node tests/result-warnings.test.js",
+    "test:security": "node tests/task-security.test.js",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

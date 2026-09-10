@@ -17,8 +17,13 @@ import traceback
 from copy import deepcopy
 from json import JSONDecodeError
 from pathlib import Path
+from zipfile import ZipFile
 
 try:
+    from document_structure import (
+        analyze_document, effective_numbering, heading_evidence,
+        section_membership, table_width_budget, declared_table_width,
+    )
     from docx import Document
     from docx.enum.text import WD_ALIGN_PARAGRAPH
     from docx.oxml import OxmlElement
@@ -106,6 +111,8 @@ STYLE_FALLBACKS = {
 }
 
 NUMBERING_CLEAR_PARAGRAPH_TYPES = set(SUPPORTED_STYLE_TYPES) - {
+    "body",
+    "reference_item",
     "table_text",
     "heading_1",
     "heading_2",
@@ -396,6 +403,21 @@ def validate_output_path(
         raise UserFacingError(f"输出文件已存在：{output_path}\n如需覆盖，请添加 --overwrite 参数。")
 
 
+def validate_report_path(report_path, input_path: Path, output_path: Path) -> None:
+    """Reject report aliases before any CLI output is written."""
+    if report_path is None:
+        return
+    path = Path(report_path)
+    try:
+        for document_path in (input_path, output_path):
+            if path.resolve() == document_path.resolve() or (
+                path.exists() and document_path.exists() and path.samefile(document_path)
+            ):
+                raise UserFacingError("报告文件不能与输入或输出 Word 文件相同。")
+    except (OSError, RuntimeError) as exc:
+        raise UserFacingError("无法确认报告路径安全，请检查路径和文件权限。") from exc
+
+
 def validate_paths(input_path: Path, output_path: Path, overwrite: bool = False) -> None:
     """兼容旧调用：同时校验输入文件和输出路径。"""
     validate_input_file(input_path)
@@ -682,6 +704,11 @@ def normalize_format_rules(template, fill_defaults=True):
         normalized_template["_template_warnings"] = warnings
         normalized_template["_indent_normalization"] = indent_normalization
         return normalized_template
+
+    for legacy, specific in (("abstract_title", "abstract_cn_title"), ("abstract_content", "abstract_cn_content")):
+        if isinstance(styles.get(specific), dict):
+            inherited = styles.get(legacy, {})
+            styles[specific] = {**(inherited if isinstance(inherited, dict) else {}), **styles[specific]}
 
     for style_name, style_config in list(styles.items()):
         if not isinstance(style_config, dict):
@@ -1517,6 +1544,7 @@ def init_report(input_path, output_path, template):
     override_metadata = template.get("_override", {"enabled": False})
     return {
         "version": VERSION,
+        "report_schema_version": 1,
         "input_file": str(input_path),
         "output_file": str(output_path),
         "template": {
@@ -1797,13 +1825,14 @@ def finalize_module_status(report, context, template) -> dict:
 
     table_count = stats.get("table", 0)
     if table_count:
+        skipped_tables = sum(item.get("applied_style") is None for item in report["tables"])
         set_module_status(
             module_status,
             "table",
             "detected",
             table_count,
-            "formatted",
-            "检测到表格并应用表格文字样式",
+            "skipped" if skipped_tables == table_count else "formatted",
+            f"检测到 {table_count} 个表格，应用格式 {table_count - skipped_tables} 个，保留原格式 {skipped_tables} 个。",
         )
 
     figure_caption_count = stats.get("figure_caption", 0)
@@ -2062,15 +2091,13 @@ def is_explicit_keywords(text: str) -> bool:
     normalized = text.strip()
     return (
         normalized == "关键词"
-        or normalized.startswith("关键词：")
-        or normalized.startswith("关键词:")
+        or CHINESE_KEYWORDS_LABEL_PATTERN.match(normalized) is not None
     )
 
 
 def is_chinese_abstract_title(text: str) -> bool:
     """判断是否是中文摘要标题。"""
-    normalized = text.strip()
-    return normalized in {"摘要", "摘 要", "摘要：", "摘要:"}
+    return re.fullmatch(r"(?:【\s*摘\s*要\s*】|摘\s*要)\s*[:：]?", text.strip()) is not None
 
 
 def is_english_abstract(text: str) -> bool:
@@ -2115,7 +2142,7 @@ def is_toc_entry(text: str) -> bool:
 
 def is_reference_title(text: str) -> bool:
     """判断是否是参考文献标题。"""
-    return text in {"参考文献", "参考文献：", "参考文献:"}
+    return text.strip().rstrip(":：").strip().casefold() in {"参考文献", "references", "bibliography"}
 
 
 def is_reference_exit_title(text: str) -> bool:
@@ -2137,6 +2164,111 @@ def is_title_candidate(text: str) -> bool:
     if text.endswith(tuple(SENTENCE_ENDING_PUNCTUATION)):
         return False
     return True
+
+
+def is_paper_title_candidate(text, paragraph) -> bool:
+    if is_title_candidate(text):
+        return True
+    if paragraph is None or not 40 < len(text) <= 240:
+        return False
+    if re.search(r"https?://|@|_{3,}|\b(?:repository|correspondence|author affiliations)\b", text, re.I):
+        return False
+    runs = [run for run in paragraph.runs if run.text.strip()]
+    # Long first-paragraph titles need explicit typographic evidence.
+    return bool(runs) and all(run.bold is True for run in runs) and not text.endswith(("。", ";", "；"))
+
+
+def detect_named_heading_type(text):
+    normalized = re.sub(r"\s+", " ", text.strip()).rstrip(":：").casefold()
+    level_one = {"introduction", "background", "method", "methods", "materials and methods",
+                 "results", "discussion", "results and discussion", "conclusion", "conclusions",
+                 "recommendations", "declarations", "full methods", "引言", "绪论", "结论", "总结"}
+    level_two = {"participants", "materials", "procedure", "procedures", "statistical analysis"}
+    if normalized in level_one:
+        return "heading_1"
+    if normalized in level_two:
+        return "heading_2"
+    return None
+
+
+def automatic_heading_level(paragraph):
+    """Resolve Chinese chapter numbering without modifying numbering definitions."""
+    if paragraph is None:
+        return None
+    numbering = effective_numbering(paragraph)
+    if not numbering or not numbering["enabled"]:
+        return None
+    level = numbering["level"]
+    if level is None:
+        return None
+    try:
+        root = paragraph.part.numbering_part.element
+    except (KeyError, NotImplementedError):
+        return None
+    nums = root.xpath('./w:num')
+    num = next((n for n in nums if n.get(qn("w:numId")) == numbering["num_id"]), None)
+    if num is None:
+        return None
+    abstract = num.find(qn("w:abstractNumId"))
+    if abstract is None:
+        return None
+    definitions = root.xpath('./w:abstractNum')
+    definition = next((n for n in definitions if n.get(qn("w:abstractNumId")) == abstract.get(qn("w:val"))), None)
+    if definition is None:
+        return None
+    levels = [n for n in definition.findall(qn("w:lvl")) if n.get(qn("w:ilvl")) == level]
+    for override in num.findall(qn("w:lvlOverride")):
+        if override.get(qn("w:ilvl")) == level and override.find(qn("w:lvl")) is not None:
+            levels = [override.find(qn("w:lvl"))]
+    if not levels:
+        return None
+    fmt = levels[0].find(qn("w:numFmt"))
+    label = levels[0].find(qn("w:lvlText"))
+    if fmt is None or label is None or fmt.get(qn("w:val")) not in {"chineseCounting", "chineseCountingThousand", "ideographTraditional"}:
+        return None
+    pattern = label.get(qn("w:val"), "")
+    if re.fullmatch(r"%\d[、．.]", pattern) or re.fullmatch(r"第%\d章", pattern):
+        return "heading_1"
+    if re.fullmatch(r"[（(]%\d[）)]", pattern):
+        return "heading_2"
+    return None
+
+
+def find_document_title(paragraphs, protected):
+    """Select an explicit title before the abstract, including after a cover sheet."""
+    candidates = []
+    first_content = next((i for i, p in enumerate(paragraphs) if p.text.strip() and i not in protected), None)
+    repository_cover = False
+    chapter_marker = False
+    for index, paragraph in enumerate(paragraphs[:80]):
+        text = paragraph.text.strip()
+        if not text or index in protected:
+            continue
+        repository_cover = repository_cover or bool(re.search(r"open access repository", text, re.I))
+        if repository_cover and re.fullmatch(r"Chapter\s+[IVXLCDM]+", text, re.I):
+            chapter_marker = True
+            continue
+        if chapter_marker and paragraph.alignment == WD_ALIGN_PARAGRAPH.CENTER and text.isupper() and 12 <= len(text) <= 160:
+            return index
+        if is_chinese_abstract_title(text) or is_english_abstract(text) or re.match(r"^(?:【摘要】|摘要[:：])", text):
+            break
+        if re.search(r"repository|accepted manuscript|copyright|https?://|学号|指导教师|毕业论文|学位论文|独创性声明", text, re.I):
+            continue
+        style = get_paragraph_style_name(paragraph).casefold()
+        if style in {"title", "标题"} and is_paper_title_candidate(text, paragraph):
+            return index
+        if index == first_content and detect_heading_type_from_style(paragraph) == "heading_1" and is_paper_title_candidate(text, paragraph) and not detect_text_heading_type(text, paragraph=paragraph):
+            candidates.append(index)
+    return candidates[0] if len(candidates) == 1 else None
+
+
+def is_bold_numbered_heading(text, paragraph):
+    if paragraph is None or len(text) > 160 or text.endswith((".", "。", ";", "；")):
+        return False
+    if not re.match(r"^\d+[.．]\s+[A-Za-z]", text):
+        return False
+    runs = [run for run in paragraph.runs if run.text.strip()]
+    return bool(runs) and all(run.bold is True for run in runs)
 
 
 def is_chapter_heading(text: str) -> bool:
@@ -2236,6 +2368,7 @@ def detect_text_heading_type(text: str, context: dict | None = None, paragraph=N
             detect_heading_type_from_style(paragraph)
             or (number in allowed_numbers and number not in seen_numbers)
             or is_strong_arabic_level1_heading_text(normalized)
+            or is_bold_numbered_heading(normalized, paragraph)
         ):
             if context is not None and number is not None:
                 seen_numbers.add(number)
@@ -2245,7 +2378,7 @@ def detect_text_heading_type(text: str, context: dict | None = None, paragraph=N
             normalized,
             "single_level_arabic_number_without_heading_context",
         )
-    return None
+    return detect_named_heading_type(normalized)
 
 
 def record_heading_style_conflict(
@@ -2278,6 +2411,9 @@ def record_heading_style_conflict(
 
 def detect_caption_type(text: str) -> str | None:
     """识别表题和图题，例如“表1 xxx”“图 1-1 xxx”。"""
+    # References to figures inside prose are not captions and must retain numbering.
+    if re.match(r"^[图表]\s*\d+(?:[-.－—]\d+)?\s*(?:为|是|中|所示|显示|表明|说明|给出)", text) or len(text) > 120:
+        return None
     if TABLE_CAPTION_PATTERN.match(text):
         return "table_caption"
     if FIGURE_CAPTION_PATTERN.match(text):
@@ -2289,6 +2425,9 @@ def detect_paragraph_type(text, index, context, paragraph=None):
     """用正则和上下文识别段落类型，不使用 AI 判断。"""
     if not text:
         return "empty"
+
+    if index in context.get("paper_title_indices", set()):
+        return "paper_title"
 
     if is_toc_title(text):
         context["in_toc_section"] = True
@@ -2315,6 +2454,8 @@ def detect_paragraph_type(text, index, context, paragraph=None):
 
     if is_english_abstract(text):
         context["in_english_abstract_section"] = True
+        context["english_abstract_content_seen"] = False
+        context["structured_english_abstract"] = False
         context["in_abstract_section"] = False
         return "abstract_en_title"
 
@@ -2328,7 +2469,7 @@ def detect_paragraph_type(text, index, context, paragraph=None):
         context["in_english_abstract_section"] = False
         return "abstract_title"
 
-    if text.startswith("摘要：") or text.startswith("摘要:"):
+    if re.match(r"^(?:【\s*摘\s*要\s*】\s*[:：]?|摘\s*要\s*[:：])", text):
         context["in_abstract_section"] = False
         return "abstract_content"
 
@@ -2338,22 +2479,29 @@ def detect_paragraph_type(text, index, context, paragraph=None):
         return "keywords"
 
     if context.get("in_abstract_section"):
-        if detect_text_heading_type(text, context, paragraph):
+        if detect_heading_type_from_style(paragraph) or detect_text_heading_type(text, context, paragraph):
             context["in_abstract_section"] = False
         else:
             return "abstract_content"
 
     if context.get("in_english_abstract_section"):
-        if detect_text_heading_type(text, context, paragraph) or detect_heading_type_from_style(paragraph):
+        named_heading = detect_named_heading_type(text)
+        if named_heading and not context.get("english_abstract_content_seen"):
+            context["structured_english_abstract"] = True
+        leave_abstract = text.strip().casefold() == "introduction" or (
+            named_heading and context.get("english_abstract_content_seen") and not context.get("structured_english_abstract")
+        )
+        if leave_abstract or detect_heading_type_from_style(paragraph) or (not named_heading and detect_text_heading_type(text, context, paragraph)):
             context["in_english_abstract_section"] = False
         else:
+            context["english_abstract_content_seen"] = True
             return "abstract_en_content"
 
     caption_type = detect_caption_type(text)
     if caption_type:
         return caption_type
 
-    text_heading_type = detect_text_heading_type(text, context, paragraph)
+    text_heading_type = context.get("automatic_headings", {}).get(index) or detect_text_heading_type(text, context, paragraph)
     if text_heading_type:
         record_heading_style_conflict(
             context,
@@ -2364,8 +2512,8 @@ def detect_paragraph_type(text, index, context, paragraph=None):
         )
         return text_heading_type
 
-    if not context.get("first_non_empty_seen"):
-        if text not in PROTECTED_FIRST_PARAGRAPHS and is_title_candidate(text):
+    if not context.get("first_non_empty_seen") and context.get("paper_title_index") is None:
+        if text not in PROTECTED_FIRST_PARAGRAPHS and is_paper_title_candidate(text, paragraph):
             return "paper_title"
 
     heading_style_type = detect_heading_type_from_style(paragraph)
@@ -2380,6 +2528,8 @@ def detect_paragraph_type(text, index, context, paragraph=None):
 
 def detect_paragraph_warning(text: str, paragraph_type: str) -> str | None:
     """识别可能存在误判风险的段落。"""
+    if paragraph_type == "body" and (TABLE_CAPTION_PATTERN.match(text) or FIGURE_CAPTION_PATTERN.match(text)) and detect_caption_type(text) is None:
+        return "该段以图表编号开头，但更像说明正文或长题注，已保留编号并按正文处理，请人工确认。"
     if paragraph_type == "table_caption" and len(text) > 50:
         return "该段类似表题，但长度较长，请人工确认"
 
@@ -2403,6 +2553,9 @@ def get_style_config(
 ):
     """根据段落类型获取模板样式；缺失时回退到 body。"""
     styles = template["styles"]
+    specific = {"abstract_title": "abstract_cn_title", "abstract_content": "abstract_cn_content"}.get(paragraph_type)
+    if specific in styles:
+        return styles[specific], specific, None
     if paragraph_type in styles:
         return styles[paragraph_type], paragraph_type, None
     fallback_type = STYLE_FALLBACKS.get(paragraph_type)
@@ -2462,22 +2615,10 @@ def get_paragraph_style_id(paragraph) -> str:
 
 
 def detect_heading_type_from_style(paragraph) -> str | None:
-    """Use existing Word Heading styles as strong heading-level signals."""
+    """Resolve outline levels and inherited styles before text heuristics."""
     if paragraph is None:
         return None
-
-    style_signature = "".join(
-        [
-            get_paragraph_style_name(paragraph),
-            " ",
-            get_paragraph_style_id(paragraph),
-        ]
-    )
-    normalized = re.sub(r"[\s_-]+", "", style_signature).lower()
-    for level in (1, 2, 3):
-        if f"heading{level}" in normalized or f"标题{level}" in normalized:
-            return f"heading_{level}"
-    return None
+    return heading_evidence(paragraph)["type"]
 
 
 def is_word_heading_paragraph(paragraph) -> bool:
@@ -2511,6 +2652,16 @@ def get_heading_style_conflict_message(conflict: dict) -> str:
     )
 
 
+def set_local_heading_level(paragraph, paragraph_type):
+    properties = paragraph._p.get_or_add_pPr()
+    outline = properties.find(qn("w:outlineLvl"))
+    if outline is None:
+        outline = OxmlElement("w:outlineLvl")
+        properties.insert_element_before(outline, "w:divId", "w:cnfStyle", "w:rPr", "w:sectPr", "w:pPrChange")
+    level = int(paragraph_type[-1]) - 1 if paragraph_type in HEADING_PARAGRAPH_STYLES else 9
+    outline.set(qn("w:val"), str(level))
+
+
 def sync_heading_paragraph_style(
     paragraph,
     paragraph_type: str,
@@ -2520,8 +2671,16 @@ def sync_heading_paragraph_style(
     target_style = HEADING_PARAGRAPH_STYLES.get(paragraph_type)
     if not target_style:
         return
+    if detect_heading_type_from_style(paragraph) == paragraph_type:
+        return
     before_style = get_paragraph_style_name(paragraph)
     before_style_id = get_paragraph_style_id(paragraph)
+    previous_style = paragraph.style
+    numbering = effective_numbering(paragraph)
+    if numbering and (numbering["sources"].get("num_id", "").startswith("style:") or numbering["level"] is None):
+        # Keep the style-to-numbering link intact; set the outline locally instead.
+        set_local_heading_level(paragraph, paragraph_type)
+        return
     try:
         paragraph.style = target_style
     except (KeyError, ValueError, AttributeError) as exc:
@@ -2535,6 +2694,18 @@ def sync_heading_paragraph_style(
         )
         increment_module_count(context, "heading_style_sync_failed")
         return
+
+    # Changing pStyle must not disconnect an inherited list from its definition.
+    if numbering is not None:
+        numpr = paragraph._p.get_or_add_pPr().get_or_add_numPr()
+        numpr.get_or_add_numId().val = int(numbering["num_id"])
+        numpr.get_or_add_ilvl().val = int(numbering["level"])
+    elif (target_numbering := effective_numbering(paragraph)) and target_numbering["enabled"]:
+        paragraph.style = previous_style
+        set_local_heading_level(paragraph, paragraph_type)
+    outline = paragraph._p.pPr.find(qn("w:outlineLvl"))
+    if outline is not None:
+        outline.set(qn("w:val"), str(int(paragraph_type[-1]) - 1))
 
     after_style = get_paragraph_style_name(paragraph)
     if after_style != before_style:
@@ -2600,6 +2771,18 @@ def apply_paragraph_style(paragraph, style_config) -> None:
     paragraph_format.line_spacing = style_config.get(
         "line_spacing", DEFAULT_STYLE["line_spacing"]
     )
+    # A source document grid can override the template's explicit line spacing.
+    properties = paragraph._p.get_or_add_pPr()
+    snap_to_grid = properties.find(qn("w:snapToGrid"))
+    if snap_to_grid is None:
+        snap_to_grid = OxmlElement("w:snapToGrid")
+        properties.insert_element_before(
+            snap_to_grid, "w:spacing", "w:ind", "w:contextualSpacing", "w:mirrorIndents",
+            "w:suppressOverlap", "w:jc", "w:textDirection", "w:textAlignment",
+            "w:textboxTightWrap", "w:outlineLvl", "w:divId", "w:cnfStyle", "w:rPr",
+            "w:sectPr", "w:pPrChange",
+        )
+    snap_to_grid.set(qn("w:val"), "0")
     paragraph_format.first_line_indent = Pt(
         style_config.get("first_line_indent_pt", DEFAULT_STYLE["first_line_indent_pt"])
     )
@@ -2630,7 +2813,7 @@ def apply_paragraph_style(paragraph, style_config) -> None:
 
 LATIN_DIGIT_TEXT_PATTERN = re.compile(r"[A-Za-z0-9]+(?:[._/-][A-Za-z0-9]+)*")
 REFERENCE_LATIN_DIGIT_TEXT_PATTERN = re.compile(r"[A-Za-z0-9,.:;()\[\]\-/]+")
-CHINESE_KEYWORDS_LABEL_PATTERN = re.compile(r"^\s*关键词[:：]")
+CHINESE_KEYWORDS_LABEL_PATTERN = re.compile(r"^\s*(?:【\s*关键词\s*】\s*[:：]?|关键词\s*[:：])")
 ENGLISH_KEYWORDS_LABEL_PATTERN = re.compile(
     r"^\s*(?:keywords|key\s+words)[:：]",
     re.IGNORECASE,
@@ -2812,8 +2995,7 @@ def apply_latin_digit_config_to_paragraph(
         if not pattern.search(run.text):
             continue
         if not run_is_plain_text_for_latin_digit_split(run):
-            set_latin_digit_run_font(run, config)
-            formatted_count += 1
+            skipped_run_count += 1
             continue
         formatted_count += format_plain_text_run_latin_digits(
             run,
@@ -3102,6 +3284,10 @@ def clear_paragraph_numbering(paragraph) -> None:
         return
 
     p_pr = paragraph._p.get_or_add_pPr()
+    num_pr = p_pr.find(qn("w:numPr"))
+    num_id = num_pr.find(qn("w:numId")) if num_pr is not None else None
+    if num_id is not None and num_id.get(qn("w:val")) == "0":
+        return
     remove_child_by_tag(p_pr, "w:numPr")
 
     try:
@@ -3161,7 +3347,7 @@ def apply_normal_style(doc, template) -> None:
     r_fonts.set(qn("w:cs"), font_name)
 
 
-def apply_page_settings(doc, template) -> None:
+def apply_page_settings(doc, template, preserved_sections=None) -> None:
     """根据模板 page 配置设置页面边距。"""
     page = template["page"]
     top_margin = Cm(page.get("top_margin_cm", 2.5))
@@ -3169,7 +3355,9 @@ def apply_page_settings(doc, template) -> None:
     left_margin = Cm(page.get("left_margin_cm", 2.5))
     right_margin = Cm(page.get("right_margin_cm", 2.5))
 
-    for section in doc.sections:
+    for index, section in enumerate(doc.sections):
+        if index in (preserved_sections or set()):
+            continue
         section.top_margin = top_margin
         section.bottom_margin = bottom_margin
         section.left_margin = left_margin
@@ -3307,9 +3495,46 @@ def record_toc_module_detection_from_xml(doc, context: dict) -> None:
         mark_module_flag(context, "toc_protected")
 
 
-def format_normal_paragraphs(doc, template, report) -> dict:
+def get_protected_toc_indices(paragraphs) -> set[int]:
+    """Locate TOC styles and fields, including fields spanning paragraphs."""
+    protected = set()
+    fields = []
+    in_text_toc = False
+    for index, paragraph in enumerate(paragraphs):
+        if get_paragraph_style_id(paragraph).upper().startswith("TOC"):
+            protected.add(index)
+        text = paragraph.text.strip()
+        if is_toc_title(text):
+            in_text_toc = True
+            protected.add(index)
+        elif in_text_toc and is_toc_entry(text):
+            protected.add(index)
+        elif text:
+            in_text_toc = False
+        for node in paragraph._p.iter():
+            if node.tag == qn("w:fldSimple"):
+                if re.match(r"^\s*TOC\b", node.get(qn("w:instr"), ""), re.I):
+                    protected.add(index)
+            elif node.tag == qn("w:fldChar"):
+                kind = node.get(qn("w:fldCharType"))
+                if kind == "begin":
+                    fields.append([index, ""])
+                elif kind == "end" and fields:
+                    start, instruction = fields.pop()
+                    if re.match(r"^\s*TOC\b", instruction, re.I):
+                        protected.update(range(start, index + 1))
+            elif node.tag == qn("w:instrText") and fields:
+                fields[-1][1] += node.text or ""
+    for start, instruction in fields:
+        if re.match(r"^\s*TOC\b", instruction, re.I):
+            protected.update(range(start, len(paragraphs)))
+    return protected
+
+
+def format_normal_paragraphs(doc, template, report, review=None) -> dict:
     """遍历普通段落，识别论文结构并按模板套用格式。"""
-    heading_numbering_system = analyze_heading_numbering_system(doc.paragraphs)
+    paragraphs = doc.paragraphs
+    heading_numbering_system = analyze_heading_numbering_system(paragraphs)
     context = {
         "first_non_empty_seen": False,
         "in_reference_section": False,
@@ -3327,14 +3552,68 @@ def format_normal_paragraphs(doc, template, report) -> dict:
         ),
     }
 
-    for index, paragraph in enumerate(doc.paragraphs):
+    protected_toc_indices = get_protected_toc_indices(paragraphs)
+    context["paper_title_index"] = find_document_title(paragraphs, protected_toc_indices)
+    title_index = context["paper_title_index"]
+    context["paper_title_indices"] = {title_index} if title_index is not None else set()
+    if title_index is not None and paragraphs[title_index].text.strip().isupper():
+        for following_index in range(title_index + 1, min(title_index + 3, len(paragraphs))):
+            p = paragraphs[following_index]
+            if p.alignment == WD_ALIGN_PARAGRAPH.CENTER and p.text.strip().isupper() and 12 <= len(p.text.strip()) <= 160:
+                context["paper_title_indices"].add(following_index)
+            else:
+                break
+    automatic = {}
+    confirmed_numbering = set()
+    for index, paragraph in enumerate(paragraphs):
+        if index in protected_toc_indices or not is_title_candidate(paragraph.text.strip()):
+            continue
+        level = automatic_heading_level(paragraph)
+        following = next((p.text.strip() for p in paragraphs[index + 1:index + 5] if p.text.strip()), "")
+        if level and (detect_number_heading_type(following) or re.match(rf"^[（(][{CHINESE_NUMBER}]+[）)]", following)):
+            automatic[index] = level
+            numbering = effective_numbering(paragraph)
+            confirmed_numbering.add((numbering["num_id"], numbering["level"]))
+    for index, paragraph in enumerate(paragraphs):
+        numbering = effective_numbering(paragraph)
+        if index not in protected_toc_indices and numbering is not None and (numbering["num_id"], numbering["level"]) in confirmed_numbering and is_title_candidate(paragraph.text.strip()):
+            automatic[index] = automatic_heading_level(paragraph)
+    context["automatic_headings"] = automatic
+    for index, paragraph in enumerate(paragraphs):
         text = paragraph.text.strip()
+        if paragraph._p.xpath('.//wp:anchor | .//w:pict'):
+            add_warning(report, index, text, "该段包含浮动图片或旧式图形；位置随正文重排可能变化，请在 Word/WPS 中检查重叠、越界及图文分页。")
+        if index in protected_toc_indices:
+            increment_module_count(context, "toc")
+            mark_module_flag(context, "toc_protected")
+            context["in_toc_section"] = True
+            context["in_abstract_section"] = False
+            context["in_english_abstract_section"] = False
+            if text:
+                context["non_empty_count"] += 1
+                context["first_non_empty_seen"] = True
+            increment_stat(context, "body" if text else "empty")
+            add_paragraph_report(report, index, text, "body", None, "目录内容已保护，未修改段落格式。")
+            continue
         was_reference_section = bool(context.get("in_reference_section"))
         was_toc_section = bool(context.get("in_toc_section"))
         paragraph_type = detect_paragraph_type(text, index, context, paragraph)
+        decision = (review or {}).get("paragraphs", {}).get(index, {})
+        if decision.get("type", "auto") != "auto":
+            paragraph_type = decision["type"]
+            context["heading_style_conflicts"] = [c for c in context.get("heading_style_conflicts", []) if c.get("paragraph_index") != index]
+            for flag in ("in_reference_section", "in_abstract_section", "in_english_abstract_section", "in_toc_section"):
+                context[flag] = False
         record_paragraph_module_detection(
             context, text, paragraph_type, was_reference_section, was_toc_section
         )
+        if decision.get("preserve"):
+            add_paragraph_report(report, index, text, paragraph_type, None, "已按保护策略保留原格式。")
+            increment_stat(context, paragraph_type)
+            if text:
+                context["non_empty_count"] += 1
+                context["first_non_empty_seen"] = True
+            continue
         warning_messages = []
         applied_style = None
 
@@ -3361,6 +3640,8 @@ def format_normal_paragraphs(doc, template, report) -> dict:
             if style_warning:
                 warning_messages.append(style_warning)
 
+            if decision.get("type", "auto") != "auto" and paragraph_type not in HEADING_PARAGRAPH_STYLES and is_word_heading_paragraph(paragraph):
+                set_local_heading_level(paragraph, paragraph_type)
             if (
                 paragraph_type in NUMBERING_CLEAR_PARAGRAPH_TYPES
                 and not is_word_heading_paragraph(paragraph)
@@ -3422,18 +3703,36 @@ def format_normal_paragraphs(doc, template, report) -> dict:
     if context["non_empty_count"] == 0:
         add_warning(report, None, "", "未检测到有效正文段落")
 
+    for kind, label in (("paper_title", "论文标题"), ("heading_1", "一级章节标题")):
+        if not context["stats"].get(kind):
+            add_warning(report, None, "", f"未识别到{label}，请核查文档结构；附件或纯表格可忽略此项。")
+    by_index = {item["index"]: item for item in report["paragraphs"]}
+    for warning in report["warnings"]:
+        item = by_index.get(warning.get("paragraph_index"))
+        warning["detected_type"] = item["detected_type"] if item else None
+        warning["applied_style"] = item["applied_style"] if item else None
+
     record_toc_module_detection_from_xml(doc, context)
 
     return context
+
+
+def iter_unique_table_cells(table):
+    """Merged cells appear in multiple grid positions but share one XML cell."""
+    seen = set()
+    for row in table.rows:
+        for cell in row.cells:
+            if cell._tc not in seen:
+                seen.add(cell._tc)
+                yield cell
 
 
 def iter_tables(tables):
     """递归获取普通表格和嵌套表格。"""
     for table in tables:
         yield table
-        for row in table.rows:
-            for cell in row.cells:
-                yield from iter_tables(cell.tables)
+        for cell in iter_unique_table_cells(table):
+            yield from iter_tables(cell.tables)
 
 
 def set_table_rows_cant_split(table) -> None:
@@ -3500,15 +3799,35 @@ def apply_table_pagination_basics(table) -> bool:
     return caption is not None
 
 
-def format_tables(doc, template, report) -> int:
+def format_tables(doc, template, report, review=None) -> int:
     """统一设置表格内文字格式，并记录表格报告。"""
     table_count = 0
+    preserved_tables = set()
+    membership = section_membership(doc)
+    user_tables = set()
+    for index, table in enumerate(iter_tables(doc.tables)):
+        if index in (review or {}).get("tables", set()):
+            user_tables.add(table._tbl)
+            user_tables.update(p for p in table._tbl.iterancestors() if p.tag == qn("w:tbl"))
 
     for table_index, table in enumerate(iter_tables(doc.tables)):
         table_count += 1
-        set_table_rows_cant_split(table)
         row_count = len(table.rows)
         cell_count = sum(len(row.cells) for row in table.rows)
+        budget = table_width_budget(doc, table, membership)
+        width = declared_table_width(table, budget)
+        inside_preserved = table._tbl in user_tables or any(parent in preserved_tables for parent in table._tbl.iterancestors())
+        if inside_preserved or budget is None or width is None or width > budget:
+            preserved_tables.add(table._tbl)
+            warning = ("已按保护策略保留该表格及其嵌套内容的原格式。" if table._tbl in user_tables else
+                       "所属外层表格已受保护，此嵌套表格保留原格式。" if inside_preserved else
+                       "无法确定表格容器或声明宽度，已保留原格式；请人工检查嵌套或分节布局。" if budget is None or width is None else
+                       "表格声明宽度超过所在节或栏的可用宽度，已保留原格式；请人工检查列宽、缩进及文字越界。")
+            add_table_report(report, table_index, row_count, cell_count, None, warning)
+            add_warning(report, None, "", warning)
+            report["warnings"][-1].update(table_index=table_index, detected_type="table", applied_style=None)
+            continue
+        set_table_rows_cant_split(table)
         style_config, applied_style, style_warning = get_style_config(
             template, "table_text", report, None, f"表格 {table_index}"
         )
@@ -3518,11 +3837,9 @@ def format_tables(doc, template, report) -> int:
             if field not in {"keep_with_next", "keep_together"}
         }
 
-        for row in table.rows:
-            for cell in row.cells:
-                for paragraph in cell.paragraphs:
-                    clear_paragraph_numbering(paragraph)
-                    apply_paragraph_style(paragraph, cell_style_config)
+        for cell in iter_unique_table_cells(table):
+            for paragraph in cell.paragraphs:
+                apply_paragraph_style(paragraph, cell_style_config)
 
         apply_table_pagination_basics(table)
         add_table_report(
@@ -3583,6 +3900,10 @@ def build_report_stats(stats, report, template) -> dict:
 def open_document(input_path: Path):
     """打开 Word 文档，并把常见打开失败转换成中文提示。"""
     try:
+        with ZipFile(input_path) as archive:
+            entries = archive.infolist()
+            if len(entries) > 10000 or sum(item.file_size for item in entries) > 100 * 1024 * 1024:
+                raise ValueError("DOCX expanded size exceeds processing limit")
         return Document(str(input_path))
     except Exception as exc:
         raise UserFacingError(
@@ -3626,17 +3947,74 @@ def safe_save_document(doc, output_path: Path, overwrite: bool = False) -> None:
                 pass
 
 
-def format_document(input_path: Path, output_path: Path, template, report, overwrite=False) -> dict:
+def format_document(input_path: Path, output_path: Path, template, report, overwrite=False, review=None) -> dict:
     """读取 Word 文件，修改格式，安全保存新文件，并返回统计结果。"""
     doc = open_document(input_path)
 
-    apply_normal_style(doc, template)
-    apply_page_settings(doc, template)
+    report["structure_analysis"] = analyze_document(doc)
+    membership = section_membership(doc)
+    review = deepcopy(review or {})
+    review.setdefault("paragraphs", {})
+    review.setdefault("tables", set())
+    proposed = deepcopy(doc)
+    apply_page_settings(proposed, template)
+    proposed_membership = section_membership(proposed)
+    automatic_tables = set()
+    for index, table in enumerate(iter_tables(proposed.tables)):
+        budget = table_width_budget(proposed, table, proposed_membership)
+        width = declared_table_width(table, budget)
+        if budget is None or width is None or width > budget:
+            automatic_tables.add(index)
+    review["tables"].update(automatic_tables)
+    automatic_paragraphs = []
+    for index, paragraph in enumerate(doc.paragraphs):
+        if paragraph._p.xpath('.//wp:anchor | .//w:pict'):
+            review["paragraphs"].setdefault(index, {})["preserve"] = True
+            automatic_paragraphs.append(index)
+    preserved_sections = set()
+    for index, paragraph in enumerate(doc.paragraphs):
+        if (review or {}).get("paragraphs", {}).get(index, {}).get("preserve") and paragraph._p.xpath('.//w:drawing | .//w:pict'):
+            preserved_sections.add(membership.get(paragraph._p))
+    for index, table in enumerate(iter_tables(doc.tables)):
+        if index in (review or {}).get("tables", set()):
+            preserved_sections.add(membership.get(table._tbl))
+    if report["structure_analysis"]["unresolved_sections"]:
+        add_warning(report, None, "", "存在未支持的包装分节结构，已跳过页面设置和表格处理；请人工检查文档布局。")
+    else:
+        apply_page_settings(doc, template, preserved_sections)
+    if preserved_sections:
+        add_warning(report, None, "", "为保护复杂版面或用户指定内容，未套用所在节的页边距要求；相邻正文重排仍可能改变位置，请检查最终页面。")
+    report["preserved_sections"] = sorted(i for i in preserved_sections if i is not None)
+    report["automatic_protection"] = {"tables": sorted(automatic_tables), "paragraphs": automatic_paragraphs}
 
-    context = format_normal_paragraphs(doc, template, report)
-    context["stats"]["table"] = format_tables(doc, template, report)
+    context = format_normal_paragraphs(doc, template, report, review)
+    context["stats"]["table"] = format_tables(doc, template, report, review)
+
+    source_paragraphs = {item["paragraph_index"]: item for item in report["structure_analysis"]["paragraphs"]
+                         if item["paragraph_index"] is not None}
+    for item in report["paragraphs"]:
+        source = source_paragraphs.get(item["index"])
+        if source is not None:
+            item["source_node_id"] = source["node_id"]
+            item["section_index"] = source["section_index"]
+            item["structural_heading_evidence"] = source["heading"]
+    report["verification"] = {"structure_inventory": "completed", "layout": "not_performed"}
+    if any(
+        source["left_margin_emu"] != current.left_margin
+        or source["right_margin_emu"] != current.right_margin
+        or source["top_margin_emu"] != current.top_margin
+        or source["bottom_margin_emu"] != current.bottom_margin
+        for source, current in zip(report["structure_analysis"]["sections"], doc.sections)
+    ):
+        add_warning(report, None, "", "已调整节的页边距；保留段落或表格 XML 不代表分页和位置不变，布局尚未通过渲染验收。")
 
     finalize_module_status(report, context, template)
+    if preserved_sections or report["structure_analysis"]["unresolved_sections"]:
+        report["module_status"]["page"] = {
+            "status": "detected", "count": len(report["preserved_sections"]),
+            "action": "skipped" if len(preserved_sections) >= len(doc.sections) or report["structure_analysis"]["unresolved_sections"] else "partial",
+            "note": "复杂版面或用户保护内容所在节未套用页边距；其他可处理节按模板执行。",
+        }
     report_stats = build_report_stats(context["stats"], report, template)
     report["stats"] = report_stats
 
@@ -3779,6 +4157,7 @@ def main(argv=None) -> int:
     output_existed = output_path.exists()
 
     ensure_dependency_installed()
+    validate_report_path(args.report, input_path, output_path)
     validate_paths(input_path, output_path, overwrite=args.overwrite)
 
     template = get_final_format_rules(

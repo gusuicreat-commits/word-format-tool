@@ -1,0 +1,7 @@
+{
+  "chinese-thesis-draft.docx": {"0": "paper_title", "7": "heading_1", "25": "heading_1", "36": "heading_1", "79": "heading_1", "68": "body", "70": "body"},
+  "swansea-innocence.docx": {"0": "body", "9": "paper_title", "10": "paper_title", "18": "heading_1"},
+  "chinese-koiyu.docx": {"1": "abstract_title", "20": "heading_1", "21": "heading_2", "42": "heading_1", "44": "heading_3"},
+  "chinese-x86.docx": {"0": "abstract_title", "89": "heading_1", "90": "heading_2", "132": "heading_1"},
+  "chinese-web.docx": {"0": "paper_title", "1": "abstract_title", "78": "heading_1", "79": "heading_2", "97": "heading_1"}
+}

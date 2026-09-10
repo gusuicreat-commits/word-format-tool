@@ -1448,8 +1448,9 @@ class CoreTests(unittest.TestCase):
 
         self.assertEqual(paragraph.style.name, "Normal")
 
-    def test_format_normal_paragraphs_clears_list_paragraph_style(self):
+    def test_format_normal_paragraphs_preserves_body_list_paragraph_style(self):
         doc = Document()
+        doc.add_paragraph("Paper title")
         paragraph = doc.add_paragraph("\u8fd9\u662f\u4e00\u6bb5\u6b63\u6587")
         paragraph.style = "List Paragraph"
         self.assertEqual(paragraph.style.name, "List Paragraph")
@@ -1464,7 +1465,7 @@ class CoreTests(unittest.TestCase):
         format_docx.format_normal_paragraphs(doc, template, report)
 
         self.assertEqual(paragraph.text, "\u8fd9\u662f\u4e00\u6bb5\u6b63\u6587")
-        self.assertEqual(paragraph.style.name, "Normal")
+        self.assertEqual(paragraph.style.name, "List Paragraph")
 
     def test_clear_paragraph_numbering_keeps_manual_number_text(self):
         doc = Document()
@@ -1511,7 +1512,7 @@ class CoreTests(unittest.TestCase):
                     self.assertIsNot(paragraph.paragraph_format.keep_with_next, True)
                     self.assertIsNot(paragraph.paragraph_format.keep_together, True)
 
-    def test_format_tables_clears_table_cell_numbering_and_list_style(self):
+    def test_format_tables_preserves_table_cell_numbering_and_list_style(self):
         doc = Document()
         table = doc.add_table(rows=1, cols=2)
         left = table.cell(0, 0).paragraphs[0]
@@ -1535,8 +1536,8 @@ class CoreTests(unittest.TestCase):
 
         self.assertEqual(left.text, "\u9636\u6bb5")
         self.assertEqual(right.text, "\u8f93\u51fa")
-        self.assertIsNone(left._p.pPr.find(format_docx.qn("w:numPr")))
-        self.assertEqual(right.style.name, "Normal")
+        self.assertIsNotNone(left._p.pPr.find(format_docx.qn("w:numPr")))
+        self.assertEqual(right.style.name, "List Bullet")
 
     def test_clears_empty_numbered_paragraph_between_caption_and_table(self):
         doc = Document()
